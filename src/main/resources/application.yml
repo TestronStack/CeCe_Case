@@ -12,7 +12,7 @@ spring:
       request-timeout: 600000
 
 server:
-  port: 8886
+  port: 8818
   tomcat:
     uri-encoding: UTF-8
     use-ssl: false

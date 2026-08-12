@@ -24,8 +24,8 @@ public class DemoApplication {
 		System.out.println("╔════════════════════════════════════════════════════════════════╗");
 		System.out.println("║                  🎉 AI测试用例生成工具已启动！                    ║");
 		System.out.println("╠════════════════════════════════════════════════════════════════╣");
-		System.out.println("║  📍 访问地址: http://localhost:8886/api/                              ║");
-		System.out.println("║  📖 Swagger文档: http://localhost:8886/swagger-ui.html            ║");
+		System.out.println("║  📍 访问地址: http://localhost:8818/api/                              ║");
+		System.out.println("║  📖 Swagger文档: http://localhost:8818/swagger-ui.html            ║");
 		System.out.println("║                                                                ║");
 		System.out.println("║  📌 功能说明:                                                   ║");
 		System.out.println("║     • Tab1: 从接口文档生成用例                                  ║");

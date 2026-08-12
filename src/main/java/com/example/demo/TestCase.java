@@ -1,130 +1,174 @@
 package com.example.demo;
 
+import java.util.HashMap;
+import java.util.Map;
+
 /**
  * 测试用例实体类
- * 支持两种类型：UI业务功能用例、后端接口自动化用例
- * 
- * UI用例字段（按顺序）：
- * 1.用例编号(规则：DOC-子模块-3位自增数字)
- * 2.测试大模块
- * 3.子模块
- * 4.测试点分类(仅正向/参数校验/边界/异常/UI校验/权限校验)
- * 5.用例标题(单一验证目标)
- * 6.前置条件
- * 7.预置测试数据
- * 8.操作步骤(带页面路径)
- * 9.量化预期结果
- * 10.优先级(P0/P1/P2)
- * 11.测试环境
- * 12.版本
- * 13.实际结果
- * 14.缺陷单号
- * 15.测试日期
+ * 支持动态字段，通过Map存储用户自定义的字段值
  */
 public class TestCase {
+    
     private String id;
     private String testCaseType;
+    private Map<String, String> dynamicFields = new HashMap<>();
+
+    public TestCase() {}
     
-    private String parentModule;
-    private String subModule;
-    private String testCategory;
-    private String testModule;
-    private String testModuleCode;
-    private String testPoint;
-    private String title;
-    
-    private String interfacePath;
-    private String method;
-    private String precondition;
-    private String presetData;
-    private String steps;
-    private String params;
-    
-    private Integer expectedStatusCode;
-    private Integer expectedBusinessCode;
-    private String expectedResult;
-    private String actualResult;
-    private String priority;
-    
-    private String testEnvironment;
-    private String version;
-    private String tester;
-    private String defectId;
-    private String testDate;
-    
-    private String expectedResponseJson;
-    private String assertionRules;
-    private String dbValidation;
-    private String completeHeaders;
-    
-    private String uiRelatedApiCaseId;
-    private String apiRelatedUiCaseId;
+    public TestCase(String id) {
+        this.id = id;
+    }
 
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
     public String getTestCaseType() { return testCaseType; }
     public void setTestCaseType(String testCaseType) { this.testCaseType = testCaseType; }
-    public String getParentModule() { return parentModule; }
-    public void setParentModule(String parentModule) { this.parentModule = parentModule; }
-    public String getSubModule() { return subModule; }
-    public void setSubModule(String subModule) { this.subModule = subModule; }
-    public String getTestCategory() { return testCategory; }
-    public void setTestCategory(String testCategory) { this.testCategory = testCategory; }
-    public String getTestModule() { return testModule; }
-    public void setTestModule(String testModule) { this.testModule = testModule; }
-    public String getTestModuleCode() { return testModuleCode; }
-    public void setTestModuleCode(String testModuleCode) { this.testModuleCode = testModuleCode; }
-    public String getTestPoint() { return testPoint; }
-    public void setTestPoint(String testPoint) { this.testPoint = testPoint; }
-    public String getTitle() { return title; }
-    public void setTitle(String title) { this.title = title; }
-    public String getInterfacePath() { return interfacePath; }
-    public void setInterfacePath(String interfacePath) { this.interfacePath = interfacePath; }
-    public String getMethod() { return method; }
-    public void setMethod(String method) { this.method = method; }
-    public String getPrecondition() { return precondition; }
-    public void setPrecondition(String precondition) { this.precondition = precondition; }
-    public String getPresetData() { return presetData; }
-    public void setPresetData(String presetData) { this.presetData = presetData; }
-    public String getSteps() { return steps; }
-    public void setSteps(String steps) { this.steps = steps; }
-    public String getParams() { return params; }
-    public void setParams(String params) { this.params = params; }
-    public Integer getExpectedStatusCode() { return expectedStatusCode; }
-    public void setExpectedStatusCode(Integer expectedStatusCode) { this.expectedStatusCode = expectedStatusCode; }
-    public Integer getExpectedBusinessCode() { return expectedBusinessCode; }
-    public void setExpectedBusinessCode(Integer expectedBusinessCode) { this.expectedBusinessCode = expectedBusinessCode; }
-    public String getExpectedResult() { return expectedResult; }
-    public void setExpectedResult(String expectedResult) { this.expectedResult = expectedResult; }
-    public String getActualResult() { return actualResult; }
-    public void setActualResult(String actualResult) { this.actualResult = actualResult; }
-    public String getPriority() { return priority; }
-    public void setPriority(String priority) { this.priority = priority; }
-    public String getTestEnvironment() { return testEnvironment; }
-    public void setTestEnvironment(String testEnvironment) { this.testEnvironment = testEnvironment; }
-    public String getVersion() { return version; }
-    public void setVersion(String version) { this.version = version; }
-    public String getTester() { return tester; }
-    public void setTester(String tester) { this.tester = tester; }
-    public String getDefectId() { return defectId; }
-    public void setDefectId(String defectId) { this.defectId = defectId; }
-    public String getTestDate() { return testDate; }
-    public void setTestDate(String testDate) { this.testDate = testDate; }
-    public String getExpectedResponseJson() { return expectedResponseJson; }
-    public void setExpectedResponseJson(String expectedResponseJson) { this.expectedResponseJson = expectedResponseJson; }
-    public String getAssertionRules() { return assertionRules; }
-    public void setAssertionRules(String assertionRules) { this.assertionRules = assertionRules; }
-    public String getDbValidation() { return dbValidation; }
-    public void setDbValidation(String dbValidation) { this.dbValidation = dbValidation; }
-    public String getCompleteHeaders() { return completeHeaders; }
-    public void setCompleteHeaders(String completeHeaders) { this.completeHeaders = completeHeaders; }
-    public String getUiRelatedApiCaseId() { return uiRelatedApiCaseId; }
-    public void setUiRelatedApiCaseId(String uiRelatedApiCaseId) { this.uiRelatedApiCaseId = uiRelatedApiCaseId; }
-    public String getApiRelatedUiCaseId() { return apiRelatedUiCaseId; }
-    public void setApiRelatedUiCaseId(String apiRelatedUiCaseId) { this.apiRelatedUiCaseId = apiRelatedUiCaseId; }
-
+    public Map<String, String> getDynamicFields() { return dynamicFields; }
+    public void setDynamicFields(Map<String, String> dynamicFields) { this.dynamicFields = dynamicFields; }
+    
+    public String getField(String fieldName) {
+        return dynamicFields.get(fieldName);
+    }
+    
+    public void setField(String fieldName, String value) {
+        dynamicFields.put(fieldName, value);
+    }
+    
+    public void removeField(String fieldName) {
+        dynamicFields.remove(fieldName);
+    }
+    
+    public boolean hasField(String fieldName) {
+        return dynamicFields.containsKey(fieldName);
+    }
+    
+    public Integer getIntField(String fieldName) {
+        String value = getField(fieldName);
+        return value != null && !value.isEmpty() ? Integer.parseInt(value) : null;
+    }
+    
+    public void setIntField(String fieldName, Integer value) {
+        setField(fieldName, value != null ? value.toString() : "");
+    }
+    
+    public boolean getBooleanField(String fieldName) {
+        String value = getField(fieldName);
+        return "是".equals(value) || "true".equalsIgnoreCase(value) || "1".equals(value);
+    }
+    
+    public void setBooleanField(String fieldName, boolean value) {
+        setField(fieldName, value ? "是" : "否");
+    }
+    
     @Override
     public String toString() {
-        return id + " | " + testCaseType + " | " + parentModule + "/" + subModule + " | " + testCategory + " | " + title;
+        StringBuilder sb = new StringBuilder();
+        sb.append(id);
+        if (testCaseType != null) {
+            sb.append(" | ").append(testCaseType);
+        }
+        String title = getField("title");
+        if (title != null) {
+            sb.append(" | ").append(title);
+        }
+        return sb.toString();
     }
+    
+    // ===== 兼容层：保留旧的getter/setter方法 =====
+    
+    public String getTestModule() { return getField("testModule"); }
+    public void setTestModule(String value) { setField("testModule", value); }
+    
+    public String getTestPoint() { return getField("testPoint"); }
+    public void setTestPoint(String value) { setField("testPoint", value); }
+    
+    public String getTitle() { return getField("title"); }
+    public void setTitle(String value) { setField("title", value); }
+    
+    public String getPrecondition() { return getField("precondition"); }
+    public void setPrecondition(String value) { setField("precondition", value); }
+    
+    public String getInterfacePath() { return getField("interfacePath"); }
+    public void setInterfacePath(String value) { setField("interfacePath", value); }
+    
+    public String getMethod() { return getField("method"); }
+    public void setMethod(String value) { setField("method", value); }
+    
+    public String getCompleteHeaders() { return getField("completeHeaders"); }
+    public void setCompleteHeaders(String value) { setField("completeHeaders", value); }
+    
+    public String getParams() { return getField("params"); }
+    public void setParams(String value) { setField("params", value); }
+    
+    public Integer getExpectedStatusCode() {
+        String value = getField("expectedStatusCode");
+        return value != null && !value.isEmpty() ? Integer.parseInt(value) : null;
+    }
+    public void setExpectedStatusCode(Integer value) { setField("expectedStatusCode", value != null ? value.toString() : ""); }
+    
+    public Integer getExpectedBusinessCode() {
+        String value = getField("expectedBusinessCode");
+        return value != null && !value.isEmpty() ? Integer.parseInt(value) : null;
+    }
+    public void setExpectedBusinessCode(Integer value) { setField("expectedBusinessCode", value != null ? value.toString() : ""); }
+    
+    public String getExpectedResponseJson() { return getField("expectedResponseJson"); }
+    public void setExpectedResponseJson(String value) { setField("expectedResponseJson", value); }
+    
+    public String getAssertionRules() { return getField("assertionRules"); }
+    public void setAssertionRules(String value) { setField("assertionRules", value); }
+    
+    public String getDbValidation() { return getField("dbValidation"); }
+    public void setDbValidation(String value) { setField("dbValidation", value); }
+    
+    public String getPriority() { return getField("priority"); }
+    public void setPriority(String value) { setField("priority", value); }
+    
+    public String getTestEnvironment() { return getField("testEnvironment"); }
+    public void setTestEnvironment(String value) { setField("testEnvironment", value); }
+    
+    public String getVersion() { return getField("version"); }
+    public void setVersion(String value) { setField("version", value); }
+    
+    public String getTester() { return getField("tester"); }
+    public void setTester(String value) { setField("tester", value); }
+    
+    public String getDefectId() { return getField("defectId"); }
+    public void setDefectId(String value) { setField("defectId", value); }
+    
+    public String getTestDate() { return getField("testDate"); }
+    public void setTestDate(String value) { setField("testDate", value); }
+    
+    public String getApiRelatedUiCaseId() { return getField("apiRelatedUiCaseId"); }
+    public void setApiRelatedUiCaseId(String value) { setField("apiRelatedUiCaseId", value); }
+    
+    public String getUiRelatedApiCaseId() { return getField("uiRelatedApiCaseId"); }
+    public void setUiRelatedApiCaseId(String value) { setField("uiRelatedApiCaseId", value); }
+    
+    public String getActualResult() { return getField("actualResult"); }
+    public void setActualResult(String value) { setField("actualResult", value); }
+    
+    public String getTestModuleCode() { return getField("testModuleCode"); }
+    public void setTestModuleCode(String value) { setField("testModuleCode", value); }
+    
+    public String getParentModule() { return getField("parentModule"); }
+    public void setParentModule(String value) { setField("parentModule", value); }
+    
+    public String getSubModule() { return getField("subModule"); }
+    public void setSubModule(String value) { setField("subModule", value); }
+    
+    public String getTestCategory() { return getField("testCategory"); }
+    public void setTestCategory(String value) { setField("testCategory", value); }
+    
+    public String getPresetData() { return getField("presetData"); }
+    public void setPresetData(String value) { setField("presetData", value); }
+    
+    public String getSteps() { return getField("steps"); }
+    public void setSteps(String value) { setField("steps", value); }
+    
+    public String getExpectedResult() { return getField("expectedResult"); }
+    public void setExpectedResult(String value) { setField("expectedResult", value); }
+    
+    public String getCustomRowData() { return getField("customRowData"); }
+    public void setCustomRowData(String value) { setField("customRowData", value); }
 }

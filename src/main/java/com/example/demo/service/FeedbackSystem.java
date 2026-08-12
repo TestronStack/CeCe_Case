@@ -70,11 +70,11 @@ public class FeedbackSystem {
             for (FeedbackRecord record : recentRecords) {
                 TestCase tc = record.getTestCase();
                 sb.append("用例编号: ").append(tc.getId()).append("\n");
-                sb.append("用例标题: ").append(tc.getTitle()).append("\n");
-                sb.append("接口路径: ").append(tc.getInterfacePath()).append("\n");
-                sb.append("请求方法: ").append(tc.getMethod()).append("\n");
-                sb.append("请求参数: ").append(tc.getParams()).append("\n");
-                sb.append("预期结果: ").append(tc.getExpectedResult()).append("\n");
+                sb.append("用例标题: ").append(tc.getField("title")).append("\n");
+                sb.append("接口路径: ").append(tc.getField("interfacePath")).append("\n");
+                sb.append("请求方法: ").append(tc.getField("method")).append("\n");
+                sb.append("请求参数: ").append(tc.getField("params")).append("\n");
+                sb.append("预期结果: ").append(tc.getField("expectedResult")).append("\n");
                 sb.append("--------------------------------------------\n");
             }
 

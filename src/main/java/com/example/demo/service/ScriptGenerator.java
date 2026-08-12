@@ -679,4 +679,87 @@ public class ScriptGenerator {
         }
         directory.delete();
     }
+
+    /**
+     * 生成 Python (requests + pytest + allure) 自动化测试脚本并打包为 ZIP
+     */
+    public static byte[] generatePythonScriptAsZip(List<TestCase> testCases, String baseUrl) throws IOException {
+        Path tempDir = Files.createTempDirectory("py-automation");
+        Path testsDir = tempDir.resolve("tests");
+        Files.createDirectories(testsDir);
+
+        Map<String, List<TestCase>> grouped = testCases.stream()
+                .collect(Collectors.groupingBy(tc -> {
+                    String p = tc.getInterfacePath();
+                    if (p == null || p.isEmpty()) return "api_test";
+                    return p.replaceAll("[^a-zA-Z0-9/]", "").replace("/", "_");
+                }));
+
+        for (Map.Entry<String, List<TestCase>> entry : grouped.entrySet()) {
+            String module = entry.getKey();
+            if (module.startsWith("_")) module = module.substring(1);
+            if (module.isEmpty()) module = "api_test";
+
+            StringBuilder py = new StringBuilder();
+            String nl = "\n";
+            py.append("import requests").append(nl);
+            py.append("import pytest").append(nl);
+            py.append("import allure").append(nl).append(nl);
+            py.append("BASE_URL = \"").append(baseUrl != null ? baseUrl : "http://localhost:8080").append("\"").append(nl).append(nl);
+            py.append("@allure.feature(\"").append(module).append("\")").append(nl);
+            py.append("class Test").append(capFirst(module)).append(":").append(nl).append(nl);
+
+            int idx = 1;
+            for (TestCase tc : entry.getValue()) {
+                String method = tc.getMethod() != null ? tc.getMethod().toLowerCase() : "get";
+                String path = tc.getInterfacePath() != null ? tc.getInterfacePath() : "/api/unknown";
+                String params = tc.getParams() != null ? tc.getParams().trim() : "";
+                String title = sanitizeTitle(tc.getTitle());
+
+                py.append("    @allure.title(\"").append(title).append("\")").append(nl);
+                py.append("    def test_").append(idx).append("(self):").append(nl);
+                py.append("        with allure.step(\"发送请求\"):").append(nl);
+                if ("get".equals(method)) {
+                    py.append("            r = requests.").append(method).append("(f\"{BASE_URL}").append(path).append("\", params=").append(pythonParams(params)).append(")").append(nl);
+                } else {
+                    py.append("            r = requests.").append(method).append("(f\"{BASE_URL}").append(path).append("\", json=").append(pythonParams(params)).append(")").append(nl);
+                }
+                py.append("        with allure.step(\"断言响应\"):").append(nl);
+                int sc = tc.getExpectedStatusCode() != null && tc.getExpectedStatusCode() > 0 ? tc.getExpectedStatusCode() : 200;
+                py.append("            assert r.status_code == ").append(sc).append(", f\"状态码 {r.status_code} 不等于 ").append(sc).append("\"").append(nl);
+                py.append("            # TODO: 根据实际响应补充业务断言").append(nl).append(nl);
+                idx++;
+            }
+            Files.write(testsDir.resolve("test_" + module + ".py"), py.toString().getBytes(StandardCharsets.UTF_8));
+        }
+
+        String reqs = "requests\npytest\nallure-pytest\n";
+        Files.write(tempDir.resolve("requirements.txt"), reqs.getBytes(StandardCharsets.UTF_8));
+        String readme = "# Python API Automation\n## Run\n```bash\npip install -r requirements.txt\npytest --alluredir=allure-results\nallure serve allure-results\n```\n";
+        Files.write(tempDir.resolve("README.md"), readme.getBytes(StandardCharsets.UTF_8));
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        try (ZipOutputStream zos = new ZipOutputStream(baos)) {
+            addFolderToZip(tempDir.toFile(), tempDir.toFile(), zos);
+        }
+        deleteDirectory(tempDir.toFile());
+        return baos.toByteArray();
+    }
+
+    private static String capFirst(String s) {
+        if (s == null || s.isEmpty()) return "Api";
+        return Character.toUpperCase(s.charAt(0)) + (s.length() > 1 ? s.substring(1) : "");
+    }
+
+    private static String sanitizeTitle(String t) {
+        if (t == null || t.isEmpty()) return "api test";
+        return t.replaceAll("[\\\\\"\\n\\r]", " ").trim();
+    }
+
+    private static String pythonParams(String params) {
+        if (params == null || params.trim().isEmpty()) return "{}";
+        if (params.trim().startsWith("{")) return params.trim();
+        return "{}";
+    }
+
 }

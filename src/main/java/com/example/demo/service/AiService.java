@@ -11,8 +11,10 @@ import org.yaml.snakeyaml.Yaml;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * AI服务类
@@ -30,6 +32,42 @@ public class AiService {
     // 全局模块计数器（跨接口调用共享，保证同一文档内编号不重置）
     private static Map<String, Integer> globalModuleCounter = new HashMap<>();
     private static int globalSequenceCounter = 1;
+
+    // 当前请求的自定义模板（null = 使用默认24/15列格式）
+    private static String currentCustomTemplate = null;
+    // 解析好的模板对象（含列名→字段key映射）
+    private static com.example.demo.TestCaseTemplate currentTemplate = null;
+
+    // 自然语言生成期望的用例数量（默认10条）
+    private static int currentGenerateCount = 10;
+
+    public static void setGenerateCount(int count) { currentGenerateCount = count > 0 ? count : 10; }
+    public static int getGenerateCount() { return currentGenerateCount; }
+
+    /** 测试设计方法要求（模块2） */
+    private static final String DESIGN_METHOD_REQUIREMENT = """
+
+            【测试设计方法要求】
+            请综合运用以下测试设计方法生成用例，保证覆盖充分且类型均衡（不能全是同一种）：
+            1. 等价类划分：对每个输入字段，识别有效/无效等价类，各至少1条
+            2. 边界值分析：对数值范围/长度限制，取 min、max、min-1、max+1 生成用例
+            3. 判定表：存在多条件组合逻辑时，覆盖条件组合
+            4. 场景法：识别主流程、备选流程、异常流程，生成端到端场景用例
+            5. 错误推测法：覆盖空值、超长、特殊字符、SQL注入特征等常见错误
+            每条用例的标题开头用【】标注其主要设计方法，如【等价类】【边界值】【判定表】【场景法】【错误推测法】。
+            """;
+
+    /** Controller 调用前设置，生成后自动清空 */
+    public static void setCustomTemplate(String t) {
+        currentCustomTemplate = (t != null && !t.trim().isEmpty()) ? t.trim() : null;
+        currentTemplate = currentCustomTemplate != null
+                ? com.example.demo.TestCaseTemplate.fromColumns(currentCustomTemplate)
+                : null;
+    }
+
+    public static String getCustomTemplate() { return currentCustomTemplate; }
+
+    public static com.example.demo.TestCaseTemplate getCurrentTemplate() { return currentTemplate; }
 
     /**
      * 重置计数器（每次开始处理新文档时调用）
@@ -223,33 +261,49 @@ public class AiService {
         if (promptGenerateTestCasesFromRequirement == null) {
             log.info("使用默认 generate-testcases-from-requirement Prompt");
             promptGenerateTestCasesFromRequirement = """
-                你是一位资深测试工程师。请根据以下需求文档，生成功能测试用例。
-
-                要求：
-                1. 覆盖正常流程、异常流程、边界值、权限场景
-                2. 每个用例用一行输出，字段用|分隔
-                3. 格式：测试模块|测试点|用例标题|前置条件|具体操作步骤|预期结果|优先级
-                4. 测试模块：根据需求内容识别业务模块（如"用户管理"、"订单系统"、"支付模块"等）
-                5. 测试点：如"正常登录"、"参数校验"、"边界值"、"权限控制"等
-                6. 前置条件：如"用户已注册"、"系统已登录"、"数据已准备"等
-                7. 具体操作步骤：详细描述测试步骤，步骤清晰可执行
-                8. 预期结果：明确描述预期的系统行为和输出
-                9. 优先级：高/中/低
-                10. 生成8-15个用例
-
-                ⚠️ 重要提示 - 请忽略以下内容：
-                - UI 布局描述、界面设计、颜色样式等视觉相关内容
-                - 技术实现细节、架构设计、数据库表结构等开发细节
-                - 项目背景介绍、历史沿革、市场分析等非功能性内容
-                - 图片、图表、原型说明等非文字描述
-                - 重复内容或同一功能的多次描述
-
-                ✅ 请重点关注以下内容：
-                - 用户操作流程和业务逻辑
-                - 输入输出的数据约束和规则
-                - 权限控制和角色划分
-                - 异常情况和错误处理
-                - 数据校验和边界条件
+                你是一位资深测试工程师。请根据以下需求文档，生成【UI业务功能用例】。
+                
+                ⚠️ 红线规则（必须严格遵守）：
+                1. 这是需求文档的功能描述，不是API接口文档，不要生成接口测试用例
+                2. 1个独立测试点 = 1条用例，一条用例只能验证单一目标，禁止多业务流程合并
+                3. 禁止过粗：不能把多环节业务塞进1条用例（失败无法定位）
+                4. 禁止过细：不要同质化参数校验过度拆分，避免大量重复冗余用例
+                5. 编号由系统自动生成，不要输出用例编号
+                6. 测试点分类必须严格使用枚举值：正向/参数校验/边界/异常/UI校验/权限校验
+                7. 优先级必须使用：P0/P1/P2
+                8. 所有预期结果必须量化，包含明确判定标准（数字、具体值、状态），禁止模糊描述
+                
+                必须覆盖的场景清单（至少覆盖以下类型）：
+                1. 正向：核心业务流程正常走通
+                2. 参数校验：必填项、格式校验、数据类型校验
+                3. 边界：字段长度边界、数量边界、日期边界
+                4. 异常：空值、非法值、重复提交、数据不存在
+                5. UI校验：页面刷新持久化、多端适配（PC/平板/手机）、文案固定性、布局正确性
+                6. 权限校验：越权访问、无权限操作、角色权限边界
+                
+                字段填写规范：
+                - 测试大模块：顶层业务域（如"系统管理"、"业务功能"、"数据管理"）
+                - 子模块：具体功能模块（如"用户管理"、"订单管理"、"商品管理"）
+                - 测试点分类：必须从枚举值中选择（正向/参数校验/边界/异常/UI校验/权限校验）
+                - 用例标题：清晰描述单一验证目标，含场景关键词
+                - 前置条件：必须包含系统状态（如"系统已登录"）、页面路径，禁止只写"系统已部署"
+                - 预置测试数据：必须包含具体账号（如"管理员账号admin/123456"）、预置数据（如"已存在用户test001"），禁止空白
+                - 操作步骤：必须包含完整页面路径（菜单入口/URL），每步以数字开头，步骤清晰可复现
+                - 量化预期结果：必须包含明确判定标准（如"页面展示≥10条数据"、"状态变为'已支付'"），禁止模糊文字
+                
+                优先级评估标准：
+                - P0：核心业务流程、主功能验证、严重安全漏洞、导致系统崩溃的场景、认证授权失败
+                - P1：边界值、一般异常、普通数据校验、UI适配、权限越权
+                - P2：次要功能、非核心场景、兼容性细节、文案校验
+                
+                输出格式（每个用例一行，字段用|分隔，不要输出用例编号！编号由系统自动生成）：
+                测试大模块|子模块|测试点分类|用例标题|前置条件|预置测试数据|操作步骤|量化预期结果|优先级|测试环境|版本|实际结果|缺陷单号|测试日期
+                
+                输出示例（正确格式）：
+                系统管理|用户管理|正向|管理员登录成功|测试环境已启动，浏览器已打开|管理员账号admin/123456已注册|1.访问http://test.example.com/login 2.输入用户名admin 3.输入密码123456 4.点击"登录"按钮|成功跳转到系统首页，右上角显示"admin"|P0|测试环境|V1.0.0|||
+                系统管理|用户管理|参数校验|用户名为空登录失败|测试环境已启动，登录页面已打开|无|1.用户名输入框留空 2.密码输入123456 3.点击"登录"按钮|提示"用户名不能为空"|P0|测试环境|V1.0.0|||
+                系统管理|用户管理|UI校验|登录页面刷新后数据不消失|测试环境已启动，登录页面已打开|无|1.在用户名输入框输入test 2.按F5刷新页面|用户名输入框保留"test"|P1|测试环境|V1.0.0|||
+                系统管理|用户管理|权限校验|普通用户访问管理员页面被拒绝|测试环境已启动，普通用户已登录|普通用户user001账号|1.在地址栏输入http://test.example.com/admin 2.按回车|跳转到403禁止访问页面|P0|测试环境|V1.0.0|||
 
                 需求文档：
                 {REQUIREMENT_DOC}
@@ -371,6 +425,73 @@ public class AiService {
         return model;
     }
 
+    /** 当前使用的模型标识（默认 deepseek-chat） */
+    private static String currentModelName = "deepseek-chat";
+
+    public static String getCurrentModelName() { return currentModelName; }
+
+    /**
+     * 切换模型（模块5：多模型切换）
+     * 支持 deepseek-chat / qwen-vl-max / doubao-vision / gpt-4o / glm-4v 等
+     */
+    public static synchronized boolean switchModel(String modelName, String apiKey) {
+        if (modelName == null || modelName.trim().isEmpty()) return false;
+        String key = (apiKey != null && !apiKey.trim().isEmpty()) ? apiKey.trim() : API_KEY;
+        if (key == null || key.isEmpty()) {
+            log.warn("切换模型失败：未提供API Key");
+            return false;
+        }
+        String name = modelName.trim();
+        String lower = name.toLowerCase();
+        try {
+            if (lower.contains("deepseek")) {
+                model = OpenAiChatModel.builder().apiKey(key)
+                        .baseUrl("https://api.deepseek.com").modelName("deepseek-chat").build();
+            } else if (lower.contains("qwen")) {
+                model = QwenChatModel.builder().apiKey(key).modelName(name).build();
+            } else if (lower.contains("doubao") || lower.contains("豆包")) {
+                // 豆包视觉：走 OpenAI 兼容接口
+                model = OpenAiChatModel.builder().apiKey(key)
+                        .baseUrl("https://ark.cn-beijing.volces.com/api/v3").modelName(name).build();
+            } else if (lower.contains("gpt")) {
+                model = OpenAiChatModel.builder().apiKey(key).modelName(name).build();
+            } else if (lower.contains("glm")) {
+                model = OpenAiChatModel.builder().apiKey(key)
+                        .baseUrl("https://open.bigmodel.cn/api/paas/v4").modelName(name).build();
+            } else {
+                model = OpenAiChatModel.builder().apiKey(key).modelName(name).build();
+            }
+            currentModelName = name;
+            log.info("✅ 已切换模型: {}", name);
+            return true;
+        } catch (Exception e) {
+            log.error("切换模型失败: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * 带重试的模型调用（API失败自动重试3次，间隔2秒）
+     */
+    public static String generateWithRetry(String prompt) {
+        Exception lastErr = null;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                String r = getModel().generate(prompt);
+                if (r != null && !r.trim().isEmpty()) return r;
+                log.warn("第 {} 次调用返回空，重试...", attempt);
+            } catch (Exception e) {
+                lastErr = e;
+                log.warn("第 {} 次调用失败: {}", attempt, e.getMessage());
+            }
+            if (attempt < 3) {
+                try { Thread.sleep(2000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+            }
+        }
+        log.error("模型调用3次均失败: {}", lastErr != null ? lastErr.getMessage() : "空响应");
+        return null;
+    }
+
     public static String getModelProviderName() {
         return getModelProvider();
     }
@@ -421,7 +542,7 @@ public class AiService {
         String prompt = promptExtractInterfaces.replace("{DOC_CONTENT}", docContent);
 
         try {
-            String result = model.generate(prompt);
+            String result = generateWithRetry(prompt);
             String[] lines = result.split("\n");
 
             StringBuilder currentApi = new StringBuilder();
@@ -518,7 +639,7 @@ public class AiService {
         String prompt = promptExtractInterfacesSimple.replace("{DOC_CONTENT}", text);
 
         try {
-            String result = model.generate(prompt);
+            String result = generateWithRetry(prompt);
             for (String line : result.split("\n")) {
                 line = line.trim();
                 if (line.contains("/api/") || line.contains("GET ") ||
@@ -549,9 +670,29 @@ public class AiService {
         if (customRequirements != null && !customRequirements.isEmpty()) {
             prompt = customRequirements + "\n\n" + prompt;
         }
+        // 测试设计方法要求（模块2）
+        prompt = prompt + DESIGN_METHOD_REQUIREMENT;
+        // 生成数量要求（模块7）
+        prompt = prompt + "\n请生成约 " + currentGenerateCount + " 条测试用例。";
+        // Few-shot：注入人工修正过的优秀用例，提升生成质量
+        String fewShot = FeedbackSystem.getFewShotExamples(5);
+        if (!fewShot.isEmpty()) {
+            prompt = fewShot + "\n\n" + prompt;
+        }
+        // 自定义模板：强制替换 prompt 中的输出格式，AI只输出用户指定的列
+        if (currentTemplate != null) {
+            String outputFormat = currentTemplate.getOutputFormat();
+            int colCount = currentTemplate.getFields().size();
+            // 移除 prompt 中所有输出格式/示例行，替换为自定义格式
+            prompt = prompt.replaceAll("(?m)^.*输出格式.*$", "")
+                          .replaceAll("(?m)^.*\\d+列.*$", "")
+                          .replaceAll("(?m)^.*字段用.*分隔.*$", "");
+            prompt = prompt + "\n\n【特别注意】输出格式改为以下" + colCount + "列，字段用|分隔：\n" + outputFormat
+                    + "\n请严格遵守：每行输出这" + colCount + "个字段，不要输出多余内容！";
+        }
 
         try {
-            String result = model.generate(prompt);
+            String result = generateWithRetry(prompt);
 
             log.debug("AI 返回内容: {}", result);
 
@@ -569,7 +710,7 @@ public class AiService {
                     continue;
                 }
 
-                if (line.contains("|") || line.contains("\t")) {
+                if (line.contains("|") || line.contains("	")) {
                     // 使用 split("\\|", -1) 保留尾部空字符串
                     String[] parts = line.contains("|") ? line.split("\\|", -1) : line.split("\t", -1);
                     // 过滤表头行和Markdown分隔行：检查前几个字段是否包含字段名或:---
@@ -581,64 +722,68 @@ public class AiService {
                             continue;
                         }
                     }
-                    if (parts.length >= 23) {
+                    // 自定义模板：用模板列数匹配，否则用默认23列解析
+                    int minCols = currentTemplate != null ? currentTemplate.getFields().size() : 23;
+                    if (parts.length >= minCols) {
                         TestCase tc = new TestCase();
 
-                        tc.setTestModule(safeGet(parts, 0));            // 测试模块
-                        tc.setTestPoint(safeGet(parts, 1));             // 测试点
-                        tc.setTitle(safeGet(parts, 2));                 // 用例标题
-                        tc.setPrecondition(safeGet(parts, 3));          // 前置条件
-                        tc.setInterfacePath(safeGet(parts, 4));         // 接口路径
-                        tc.setMethod(safeGet(parts, 5));                // 请求方法
-                        tc.setCompleteHeaders(safeGet(parts, 6));       // 请求头
-                        tc.setParams(safeGet(parts, 7));                // 请求参数
-                        tc.setExpectedResponseJson(safeGet(parts, 10)); // 预期响应JSON
-                        tc.setAssertionRules(safeGet(parts, 11));       // 断言规则
-                        tc.setDbValidation(safeGet(parts, 12));         // 数据库校验
-                        tc.setPriority(priority(safeGet(parts, 13)));   // 优先级
-                        tc.setTestEnvironment(safeGet(parts, 14));      // 测试环境
-                        tc.setVersion(safeGet(parts, 15));              // 版本
-                        tc.setTester(safeGet(parts, 16));              // 测试人
-                        tc.setDefectId(safeGet(parts, 17));            // 缺陷ID
-                        tc.setTestDate(safeGet(parts, 18));            // 测试日期
-                        tc.setApiRelatedUiCaseId(safeGet(parts, 19));  // 关联UI用例ID
-                        tc.setActualResult(safeGet(parts, 20));        // 实际结果
-                        tc.setTestCaseType(safeGet(parts, 21));        // 测试类型
-                        tc.setTestModuleCode(safeGet(parts, 22));       // 测试模块代码
+                        if (currentTemplate != null) {
+                            // 自定义模板：按位置映射到模板字段key
+                            for (int i = 0; i < currentTemplate.getFields().size() && i < parts.length; i++) {
+                                String key = currentTemplate.getFields().get(i).getFieldName();
+                                String val = safeGet(parts, i);
+                                tc.setField(key, val);
+                            }
+                        } else {
+                            // 默认24列API映射
+                            tc.setField("testModule", safeGet(parts, 0));
+                            tc.setField("testPoint", safeGet(parts, 1));
+                            tc.setField("title", safeGet(parts, 2));
+                            tc.setField("precondition", safeGet(parts, 3));
+                            tc.setField("interfacePath", safeGet(parts, 4));
+                            tc.setField("method", safeGet(parts, 5));
+                            tc.setField("completeHeaders", safeGet(parts, 6));
+                            tc.setField("params", safeGet(parts, 7));
+                            tc.setField("expectedResponseJson", safeGet(parts, 10));
+                            tc.setField("assertionRules", safeGet(parts, 11));
+                            tc.setField("dbValidation", safeGet(parts, 12));
+                            tc.setField("priority", priority(safeGet(parts, 13)));
+                            tc.setField("testEnvironment", safeGet(parts, 14));
+                            tc.setField("version", safeGet(parts, 15));
+                            tc.setField("tester", safeGet(parts, 16));
+                            tc.setField("defectId", safeGet(parts, 17));
+                            tc.setField("testDate", safeGet(parts, 18));
+                            tc.setField("apiRelatedUiCaseId", safeGet(parts, 19));
+                            tc.setField("actualResult", safeGet(parts, 20));
+                            tc.setField("testCaseType", safeGet(parts, 21));
+                            tc.setField("testModuleCode", safeGet(parts, 22));
 
-                        // 状态码和业务码特殊处理
-                        String sc = safeGet(parts, 8);
-                        if (!sc.isEmpty() && sc.matches("\\d+")) tc.setExpectedStatusCode(Integer.parseInt(sc));
-                        String bc = safeGet(parts, 9);
-                        if (!bc.isEmpty() && bc.matches("\\d+")) tc.setExpectedBusinessCode(Integer.parseInt(bc));
+                            String sc = safeGet(parts, 8);
+                            if (!sc.isEmpty() && sc.matches("\\d+")) tc.setField("expectedStatusCode", sc);
+                            String bc = safeGet(parts, 9);
+                            if (!bc.isEmpty() && bc.matches("\\d+")) tc.setField("expectedBusinessCode", bc);
+                        }
 
-                        // 质量校验：过滤低质量用例
-                        // 跳过表头/空行：模块为空的数据行不要
-                        if (tc.getTestModule() == null || tc.getTestModule().isEmpty()) {
+                        // 空模块/空标题行跳过
+                        if ((tc.getField("testModule") == null || tc.getField("testModule").isEmpty())
+                                && (tc.getField("title") == null || tc.getField("title").isEmpty())) {
                             continue;
                         }
-                        // 自动修正：如果AI把URL放到了标题位置，交换回来
-                        String title = tc.getTitle();
-                        String path = tc.getInterfacePath();
+                        // 修正标题/路径互换
+                        String title = tc.getField("title");
+                        String path = tc.getField("interfacePath");
                         if (title != null && title.contains("/") && (path == null || !path.contains("/"))) {
-                            tc.setInterfacePath(title);
-                            tc.setTitle(path);
+                            tc.setField("interfacePath", title);
+                            tc.setField("title", path);
                         }
-                        // 如果模块代码还是空的或者占位符，自动计算
-                        String mc = tc.getTestModuleCode();
-                        if (mc == null || mc.isEmpty() || mc.length() == 1) {
-                            tc.setTestModuleCode(getModuleCode(tc.getTestModule()));
-                        }
-                        if (!isValidApiTestCase(tc)) {
-                            log.warn("质量过滤：丢弃低质量用例 [{}] {}", tc.getTitle(), tc.getTestPoint());
-                            continue;
-                        }
-
                         // 生成编号
-                        String modulePrefix = getApiModulePrefix(tc.getTestModule(), tc.getInterfacePath());
+                        String moduleForId = (tc.getField("testModule") != null && !tc.getField("testModule").isEmpty())
+                                ? tc.getField("testModule") : "API";
+                        String modulePrefix = getApiModulePrefix(moduleForId, tc.getField("interfacePath"));
                         int count = globalModuleCounter.getOrDefault(modulePrefix, 0) + 1;
                         globalModuleCounter.put(modulePrefix, count);
                         tc.setId(modulePrefix + "-" + String.format("%04d", count));
+                        tc.setTestCaseType("API");
 
                         testCases.add(tc);
                     }
@@ -672,7 +817,7 @@ public class AiService {
         String prompt = promptGenerateTestCasesFromRequirement.replace("{REQUIREMENT_DOC}", requirementDoc);
 
         try {
-            String result = model.generate(prompt);
+            String result = generateWithRetry(prompt);
 
             log.debug("AI 返回内容: {}", result);
 
@@ -683,46 +828,54 @@ public class AiService {
 
             String[] lines = result.split("\n");
 
-
             for (String line : lines) {
                 line = line.trim();
-                if (line.isEmpty() || line.startsWith("---") || line.startsWith("测试模块") || line.startsWith("用例编号")) {
+                if (line.isEmpty() || line.startsWith("---") || line.startsWith("测试大模块") || line.startsWith("用例编号")) {
                     continue;
                 }
 
                 if (line.contains("|")) {
                     String[] parts = line.split("\\|", -1);
-                    if (parts.length >= 7) {
+                    if (parts.length >= 14) {
                         TestCase tc = new TestCase();
 
-                        String testModule = safeGet(parts, 0);
-                        String testPoint = safeGet(parts, 1);
-                        String title = safeGet(parts, 2);
-                        String precondition = safeGet(parts, 3);
-                        String steps = safeGet(parts, 4);
-                        String expectedResult = safeGet(parts, 5);
-                        String priority = parts.length > 6 ? safeGet(parts, 6) : "中";
+                        String parentModule = safeGet(parts, 0);
+                        String subModule = safeGet(parts, 1);
+                        String testCategory = safeGet(parts, 2);
+                        String title = safeGet(parts, 3);
+                        String precondition = safeGet(parts, 4);
+                        String presetData = safeGet(parts, 5);
+                        String steps = safeGet(parts, 6);
+                        String expectedResult = safeGet(parts, 7);
+                        String priority = safeGet(parts, 8);
+                        String testEnvironment = safeGet(parts, 9);
+                        String version = safeGet(parts, 10);
+                        String actualResult = safeGet(parts, 11);
+                        String defectId = safeGet(parts, 12);
+                        String testDate = safeGet(parts, 13);
 
                         tc.setTestCaseType("UI");
-                        tc.setTestModule(testModule);
-                        tc.setTestModuleCode(getModuleCode(testModule));
-                        tc.setTestPoint(testPoint);
-                        tc.setTitle(title);
-                        tc.setPrecondition(precondition);
-                        tc.setSteps(steps);
-                        tc.setExpectedResult(expectedResult);
-                        tc.setPriority(priority);
+                        tc.setField("parentModule", parentModule);
+                        tc.setField("subModule", subModule);
+                        tc.setField("testCategory", testCategory);
+                        tc.setField("testModule", parentModule + "-" + subModule);
+                        tc.setField("testModuleCode", getModuleCode(subModule));
+                        tc.setField("title", title);
+                        tc.setField("precondition", precondition);
+                        tc.setField("presetData", presetData);
+                        tc.setField("steps", steps);
+                        tc.setField("expectedResult", expectedResult);
+                        tc.setField("priority", priority.isEmpty() ? "P1" : priority);
+                        tc.setField("testEnvironment", testEnvironment.isEmpty() ? "测试环境" : testEnvironment);
+                        tc.setField("version", version.isEmpty() ? "V1.0.0" : version);
+                        tc.setField("actualResult", actualResult);
+                        tc.setField("defectId", defectId);
+                        tc.setField("testDate", testDate);
 
-                        tc.setTestEnvironment("测试环境");
-                        tc.setVersion("V1.0.0");
-                        tc.setTester("");
-                        tc.setDefectId("");
-                        tc.setTestDate("");
-
-                        String modulePrefix = getModulePrefix(testModule);
+                        String modulePrefix = "DOC-" + getSubModuleCode(subModule);
                         int count = globalModuleCounter.getOrDefault(modulePrefix, 0) + 1;
                         globalModuleCounter.put(modulePrefix, count);
-                        tc.setId(modulePrefix + "-" + String.format("%04d", count));
+                        tc.setId(modulePrefix + "-" + String.format("%03d", count));
 
                         testCases.add(tc);
                     }
@@ -792,31 +945,31 @@ public class AiService {
                     testCases.add(currentTc);
                 }
                 currentTc = new TestCase();
-                currentTc.setTitle(line.replaceAll("^\\d+\\.", "").trim());
+                currentTc.setField("title", line.replaceAll("^\\d+\\.", "").trim());
                 currentTc.setId("REQ-" + String.format("%03d", caseNum++));
             } else if (line.startsWith("模块：") || line.startsWith("测试模块：")) {
                 if (currentTc != null) {
-                    currentTc.setTestModule(line.replaceAll("^测试?模块[：:]", "").trim());
+                    currentTc.setField("testModule", line.replaceAll("^测试?模块[：:]", "").trim());
                 }
             } else if (line.startsWith("测试点：")) {
                 if (currentTc != null) {
-                    currentTc.setTestPoint(line.replaceAll("^测试点[：:]", "").trim());
+                    currentTc.setField("testPoint", line.replaceAll("^测试点[：:]", "").trim());
                 }
             } else if (line.startsWith("前置条件：")) {
                 if (currentTc != null) {
-                    currentTc.setPrecondition(line.replaceAll("^前置条件[：:]", "").trim());
+                    currentTc.setField("precondition", line.replaceAll("^前置条件[：:]", "").trim());
                 }
             } else if (line.startsWith("步骤：") || line.startsWith("操作步骤：")) {
                 if (currentTc != null) {
-                    currentTc.setSteps(line.replaceAll("^操作?步骤[：:]", "").trim());
+                    currentTc.setField("steps", line.replaceAll("^操作?步骤[：:]", "").trim());
                 }
             } else if (line.startsWith("预期：") || line.startsWith("预期结果：")) {
                 if (currentTc != null) {
-                    currentTc.setExpectedResult(line.replaceAll("^预期(结果)?[：:]", "").trim());
+                    currentTc.setField("expectedResult", line.replaceAll("^预期(结果)?[：:]", "").trim());
                 }
             } else if (line.startsWith("优先级：")) {
                 if (currentTc != null) {
-                    currentTc.setPriority(line.replaceAll("^优先级[：:]", "").trim());
+                    currentTc.setField("priority", line.replaceAll("^优先级[：:]", "").trim());
                 }
             }
         }
@@ -889,23 +1042,19 @@ public class AiService {
      */
     private static boolean isValidApiTestCase(TestCase tc) {
         if (tc == null) return false;
-        // 检查参数值是否含占位符
-        String params = tc.getParams();
+        String params = tc.getField("params");
         if (params != null && !params.isEmpty()) {
-            // 检查是否有 xxx 或 test 等占位符
             String lower = params.toLowerCase();
             if (lower.contains("xxx") || lower.contains("\"test\"") || lower.contains("\"abc\"")
                 || lower.contains("string") || lower.contains("请填写")) {
                 return false;
             }
         }
-        // 预期结果是必填的
-        if (tc.getExpectedResult() == null || tc.getExpectedResult().isEmpty()) {
+        String expectedResult = tc.getField("expectedResult");
+        if (expectedResult == null || expectedResult.isEmpty()) {
             return false;
         }
-        // 预期结果必须量化（包含数字或具体值）
-        String er = tc.getExpectedResult();
-        if (er.length() < 5 || (!er.contains(" ") && !er.contains("{"))) {
+        if (expectedResult.length() < 5 || (!expectedResult.contains(" ") && !expectedResult.contains("{"))) {
             return false;
         }
         return true;
@@ -940,66 +1089,65 @@ public class AiService {
 
             TestCase tc = new TestCase();
             tc.setTestCaseType("API");
-            tc.setTestEnvironment("测试环境");
-            tc.setVersion("V1.0.0");
-            tc.setPriority("中");
+            tc.setField("testEnvironment", "测试环境");
+            tc.setField("version", "V1.0.0");
+            tc.setField("priority", "中");
 
             String[] parts = null;
             if (line.contains("|")) {
                 parts = line.split("\\|", -1);
-            } else if (line.contains("\t")) {
+            } else if (line.contains("	")) {
                 parts = line.split("\t", -1);
             }
 
             if (parts != null && parts.length >= 10) {
-                tc.setTestModule(safeGet(parts, 0));
-                tc.setTestPoint(safeGet(parts, 1));
-                tc.setTitle(safeGet(parts, 2));
-                tc.setInterfacePath(safeGet(parts, 3));
-                tc.setMethod(safeGet(parts, 4));
-                tc.setPrecondition(safeGet(parts, 5));
-                tc.setSteps(safeGet(parts, 6));
-                tc.setParams(safeGet(parts, 7));
+                tc.setField("testModule", safeGet(parts, 0));
+                tc.setField("testPoint", safeGet(parts, 1));
+                tc.setField("title", safeGet(parts, 2));
+                tc.setField("interfacePath", safeGet(parts, 3));
+                tc.setField("method", safeGet(parts, 4));
+                tc.setField("precondition", safeGet(parts, 5));
+                tc.setField("steps", safeGet(parts, 6));
+                tc.setField("params", safeGet(parts, 7));
                 if (isNumeric(safeGet(parts, 8))) {
-                    tc.setExpectedStatusCode(Integer.parseInt(safeGet(parts, 8)));
+                    tc.setField("expectedStatusCode", safeGet(parts, 8));
                 }
                 if (!safeGet(parts, 9).isEmpty() && isNumeric(safeGet(parts, 9))) {
-                    tc.setExpectedBusinessCode(Integer.parseInt(safeGet(parts, 9)));
+                    tc.setField("expectedBusinessCode", safeGet(parts, 9));
                 }
                 if (parts.length > 10) {
-                    tc.setExpectedResult(safeGet(parts, 10));
+                    tc.setField("expectedResult", safeGet(parts, 10));
                 }
 
-                String module = tc.getTestModule() != null && !tc.getTestModule().isEmpty() ? tc.getTestModule() : "API";
+                String module = tc.getField("testModule") != null && !tc.getField("testModule").isEmpty() ? tc.getField("testModule") : "API";
                 int cnt = moduleCounter.getOrDefault(module, 0) + 1;
                 moduleCounter.put(module, cnt);
                 tc.setId(module + "-" + String.format("%04d", cnt));
-                tc.setTestModuleCode(getModuleCode(module));
+                tc.setField("testModuleCode", getModuleCode(module));
             } else if (parts != null && parts.length >= 5) {
-                tc.setTitle(safeGet(parts, 1));
-                if (parts.length >= 3) tc.setInterfacePath(safeGet(parts, 2));
-                if (parts.length >= 4) tc.setMethod(safeGet(parts, 3));
-                if (parts.length >= 5) tc.setParams(safeGet(parts, 4));
+                tc.setField("title", safeGet(parts, 1));
+                if (parts.length >= 3) tc.setField("interfacePath", safeGet(parts, 2));
+                if (parts.length >= 4) tc.setField("method", safeGet(parts, 3));
+                if (parts.length >= 5) tc.setField("params", safeGet(parts, 4));
                 if (parts.length >= 6) {
                     String statusCode = safeGet(parts, 5);
-                    if (isNumeric(statusCode)) tc.setExpectedStatusCode(Integer.parseInt(statusCode));
+                    if (isNumeric(statusCode)) tc.setField("expectedStatusCode", statusCode);
                 }
                 if (parts.length >= 7) {
                     String businessCode = safeGet(parts, 6);
-                    if (!businessCode.isEmpty() && isNumeric(businessCode)) tc.setExpectedBusinessCode(Integer.parseInt(businessCode));
+                    if (!businessCode.isEmpty() && isNumeric(businessCode)) tc.setField("expectedBusinessCode", businessCode);
                 }
-                if (parts.length >= 8) tc.setExpectedResult(safeGet(parts, 7));
-                else if (parts.length >= 5) tc.setExpectedResult(safeGet(parts, 5));
+                if (parts.length >= 8) tc.setField("expectedResult", safeGet(parts, 7));
+                else if (parts.length >= 5) tc.setField("expectedResult", safeGet(parts, 5));
 
                 tc.setId("TC-F" + String.format("%04d", caseIndex++));
-                tc.setTestModule("功能");
-                tc.setInterfacePath("/api/unknown");
+                tc.setField("testModule", "功能");
+                tc.setField("interfacePath", "/api/unknown");
             } else {
-                // 跳过自然语言描述行，不作为测试用例
                 if (line.length() > 15 || !line.contains("/")) continue;
-                tc.setTitle(line);
-                tc.setMethod("POST");
-                tc.setInterfacePath("/api/unknown");
+                tc.setField("title", line);
+                tc.setField("method", "POST");
+                tc.setField("interfacePath", "/api/unknown");
                 tc.setId("TC-F" + String.format("%04d", caseIndex++));
             }
 
@@ -1021,13 +1169,26 @@ public class AiService {
         log.info("开始按章节生成测试用例，共 {} 个章节/段落", sections.size());
         int sectionIndex = 1;
 
+        // Few-shot：注入人工修正用例提升质量
+        String fewShot = FeedbackSystem.getFewShotExamples(5);
+        // 自定义模板输出格式说明
+        String customFormatNote = "";
+        if (currentTemplate != null) {
+            customFormatNote = "\n\n【特别注意】输出格式改为以下" + currentTemplate.getFields().size()
+                    + "列，字段用|分隔：\n" + currentTemplate.getOutputFormat()
+                    + "\n请严格遵守：每行输出这" + currentTemplate.getFields().size() + "个字段，不要输出多余内容！";
+        }
+
         for (WordParser.SectionContent section : sections) {
             log.info("处理章节 [{}/{}]: {}", sectionIndex, sections.size(), section.getTitle());
 
             String sectionPrompt = buildRequirementSectionPrompt(section.getTitle(), section.getContent());
-            
+            sectionPrompt = sectionPrompt + DESIGN_METHOD_REQUIREMENT;
+            if (!fewShot.isEmpty()) sectionPrompt = fewShot + "\n\n" + sectionPrompt;
+            if (!customFormatNote.isEmpty()) sectionPrompt = sectionPrompt.replaceAll("(?m)^.*输出格式.*$", "")
+                    .replaceAll("(?m)^.*\\d+列.*$", "") + customFormatNote;
             try {
-                String result = model.generate(sectionPrompt);
+                String result = generateWithRetry(sectionPrompt);
                 log.debug("章节 {} AI返回内容长度: {}", section.getTitle(), result != null ? result.length() : 0);
 
                 if (result == null || result.trim().isEmpty()) {
@@ -1126,50 +1287,57 @@ public class AiService {
     private static List<TestCase> parseRequirementTestCases(String result, String sectionTitle) {
         List<TestCase> testCases = new ArrayList<>();
         String[] lines = result.split("\n");
-
         for (String line : lines) {
             line = line.trim();
-            if (line.isEmpty() || line.startsWith("---") || line.startsWith(":---") || line.startsWith("测试大模块") || line.startsWith("子模块") || line.startsWith("用例编号")) {
-                continue;
-            }
-
-            // 先尝试 | 分隔，如果AI输出的是Tab分隔也支持
+            if (line.isEmpty() || line.startsWith("---") || line.startsWith(":---")
+                || line.startsWith("测试大模块") || line.startsWith("子模块")
+                || line.startsWith("用例编号")) continue;
             String[] parts = null;
-            if (line.contains("|")) {
-                parts = line.split("\\|", -1);
-            } else if (line.contains("\t")) {
-                parts = line.split("\t", -1);
-            }
-            if (parts != null && parts.length >= 14) {
-                    TestCase tc = new TestCase();
-
-                    tc.setTestCaseType("UI");
-                    tc.setParentModule(safeGet(parts, 0));           // 测试大模块
-                    tc.setSubModule(safeGet(parts, 1));              // 子模块
-                    tc.setTestCategory(safeGet(parts, 2));           // 测试点分类
-                    tc.setTitle(safeGet(parts, 3));                  // 用例标题
-                    tc.setPrecondition(safeGet(parts, 4));           // 前置条件
-                    tc.setPresetData(safeGet(parts, 5));             // 预置测试数据
-                    tc.setSteps(safeGet(parts, 6));                  // 操作步骤
-                    tc.setExpectedResult(safeGet(parts, 7));         // 量化预期结果
-                    tc.setPriority(priority(safeGet(parts, 8)));    // 优先级
-                    tc.setTestEnvironment(safeGet(parts, 9));        // 测试环境
-                    tc.setVersion(safeGet(parts, 10));               // 版本
-                    tc.setActualResult(safeGet(parts, 11));          // 实际结果
-                    tc.setDefectId(safeGet(parts, 12));              // 缺陷单号
-                    tc.setTestDate(safeGet(parts, 13));              // 测试日期
-                    tc.setTestModule(tc.getParentModule() + "-" + tc.getSubModule());
-                    tc.setTestModuleCode(getModuleCode(tc.getSubModule()));
-
-                    String modulePrefix = "DOC-" + getSubModuleCode(tc.getSubModule());
-                    int count = globalModuleCounter.getOrDefault(modulePrefix, 0) + 1;
-                    globalModuleCounter.put(modulePrefix, count);
-                    tc.setId(modulePrefix + "-" + String.format("%03d", count));
-
-                    testCases.add(tc);
+            if (line.contains("|")) parts = line.split("[|]", -1);
+            else if (line.contains("	")) parts = line.split("\t", -1);
+            int minCols = currentTemplate != null ? currentTemplate.getFields().size() : 14;
+            if (parts != null && parts.length >= minCols) {
+                TestCase tc = new TestCase();
+                tc.setTestCaseType("UI");
+                if (currentTemplate != null) {
+                    // 自定义模板：按位置映射到模板字段key
+                    for (int i = 0; i < currentTemplate.getFields().size() && i < parts.length; i++) {
+                        String key = currentTemplate.getFields().get(i).getFieldName();
+                        tc.setField(key, safeGet(parts, i));
+                    }
+                } else {
+                    // 默认14列UI映射
+                    tc.setField("parentModule", safeGet(parts, 0));
+                    tc.setField("subModule", safeGet(parts, 1));
+                    tc.setField("testCategory", safeGet(parts, 2));
+                    tc.setField("title", safeGet(parts, 3));
+                    tc.setField("precondition", safeGet(parts, 4));
+                    tc.setField("presetData", safeGet(parts, 5));
+                    tc.setField("steps", safeGet(parts, 6));
+                    tc.setField("expectedResult", safeGet(parts, 7));
+                    tc.setField("priority", priority(safeGet(parts, 8)));
+                    tc.setField("testEnvironment", safeGet(parts, 9));
+                    tc.setField("version", safeGet(parts, 10));
+                    tc.setField("actualResult", safeGet(parts, 11));
+                    tc.setField("defectId", safeGet(parts, 12));
+                    tc.setField("testDate", safeGet(parts, 13));
                 }
+                String parentModule = tc.getField("parentModule");
+                String subModule = tc.getField("subModule");
+                if (parentModule != null && subModule != null) {
+                    tc.setField("testModule", parentModule + "-" + subModule);
+                    tc.setField("testModuleCode", getModuleCode(subModule));
+                }
+                // 生成编号（优先用子模块，否则用测试模块）
+                String modForId = (subModule != null && !subModule.isEmpty()) ? subModule
+                        : (tc.getField("testModule") != null ? tc.getField("testModule") : "UI");
+                String pfx = "DOC-" + getSubModuleCode(modForId);
+                int cnt = globalModuleCounter.getOrDefault(pfx, 0) + 1;
+                globalModuleCounter.put(pfx, cnt);
+                tc.setId(pfx + "-" + String.format("%03d", cnt));
+                testCases.add(tc);
             }
-
+        }
         return testCases;
     }
 
@@ -1456,4 +1624,5 @@ public class AiService {
         
         return "API";
     }
+
 }
