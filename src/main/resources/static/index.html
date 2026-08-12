@@ -96,8 +96,9 @@ body{font-family:'SF Mono','Cascadia Code',Menlo,monospace;background:#0a0e1a;co
 <div class="fg" id="cf1" style="display:none"><label>选择章节（可多选）</label><select name="chapterTitles" multiple size="5" style="width:100%"><option value="">请先选择文档</option></select>
 <div style="font-size:10px;color:#4a6a7a;margin-top:4px">选择文件后自动识别章节，Ctrl+点击多选</div></div>
 <div class="fg" id="kf1" style="display:none"><label>关键词（逗号分隔）</label><input type="text" name="keywords" placeholder="支付,退款,对账"></div></div>
+<div class="fg" style="display:flex;gap:10px"><div style="flex:1"><label>创建人</label><input type="text" name="creator" placeholder="张三"></div><div style="flex:1"><label>关联需求</label><input type="text" name="relatedRequirement" placeholder="REQ-2026-001"></div></div>
 <div class="fg"><label style="cursor:pointer" onclick="to('ctb1')">📐 自定义列模板（可选） ▾</label>
-<div id="ctb1" style="display:none;margin-top:8px"><textarea name="customTemplate" rows="2" placeholder="输入列名用 | 分隔，留空使用默认15列&#10;例：*标题|所属分组|创建人|关联需求|前置条件|测试步骤|预期结果|状态|等级|类型|*自动化"></textarea></div></div>
+<div id="ctb1" style="display:none;margin-top:8px"><textarea name="customTemplate" rows="2" placeholder="输入列名用 | 分隔，留空使用默认15列&#10;例：*标题|所属分组|创建人|关联需求|前置条件|测试步骤|预期结果|状态|等级|类型|*自动化&#10;注：类型默认填"功能测试"，自动化默认不填"></textarea></div></div>
 <div class="fg"><label>输出格式</label><select name="outputFormat"><option value="xlsx">Excel (.xlsx)</option><option value="csv">CSV</option><option value="json">JSON</option><option value="md">Markdown</option></select></div>
 <div class="fg"><label>导出路径（可选，填绝对路径保存到服务器）</label><input type="text" name="outputPath" placeholder="D:\testcases\需求测试"></div>
 <button type="submit" class="btn">生成测试用例</button>
@@ -136,8 +137,9 @@ body{font-family:'SF Mono','Cascadia Code',Menlo,monospace;background:#0a0e1a;co
 <div class="fg"><label>文档类型</label><select name="type"><option value="interface">接口描述</option><option value="requirement">需求描述</option></select></div>
 <div class="fg"><label>输入内容</label><textarea name="content" rows="6" placeholder="功能：用户注册接口&#10;URL: /api/user/register&#10;Method: POST&#10;参数: username(必填,4-20位), password(必填,8-16位)&#10;成功响应: {&quot;code&quot;:0,&quot;message&quot;:&quot;注册成功&quot;}"></textarea></div>
 <div class="fg"><label>生成数量</label><input type="number" name="generateCount" value="10" min="1" max="50"></div>
+<div class="fg" style="display:flex;gap:10px"><div style="flex:1"><label>创建人</label><input type="text" name="creator" placeholder="张三"></div><div style="flex:1"><label>关联需求</label><input type="text" name="relatedRequirement" placeholder="REQ-2026-001"></div></div>
 <div class="fg"><label style="cursor:pointer" onclick="to('ctb3')">📐 自定义列模板（可选） ▾</label>
-<div id="ctb3" style="display:none;margin-top:8px"><textarea name="customTemplate" rows="2" placeholder="留空使用默认格式"></textarea></div></div>
+<div id="ctb3" style="display:none;margin-top:8px"><textarea name="customTemplate" rows="2" placeholder="留空使用默认格式&#10;注：类型默认填"功能测试"，自动化默认不填"></textarea></div></div>
 <div class="fg"><label>输出格式</label><select name="outputFormat"><option value="xlsx">Excel (.xlsx)</option><option value="csv">CSV</option><option value="json">JSON</option><option value="md">Markdown</option></select></div>
 <div class="fg"><label>导出路径（可选）</label><input type="text" name="outputPath" placeholder="D:\testcases\自定义测试"></div>
 <button type="submit" class="btn">生成测试用例</button>

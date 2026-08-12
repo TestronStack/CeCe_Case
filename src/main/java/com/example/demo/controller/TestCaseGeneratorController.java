@@ -42,6 +42,8 @@ public class TestCaseGeneratorController {
             @RequestParam(value = "chapterTitles", required = false) String chapterTitles,
             @RequestParam(value = "keywords", required = false) String keywords,
             @RequestParam(value = "customTemplate", required = false) String customTemplate,
+            @RequestParam(value = "creator", required = false) String creator,
+            @RequestParam(value = "relatedRequirement", required = false) String relatedRequirement,
             @RequestParam(value = "outputFormat", defaultValue = "xlsx") String outputFormat,
             @RequestParam(value = "outputPath", required = false) String outputPath) {
 
@@ -92,9 +94,12 @@ public class TestCaseGeneratorController {
 
             if (allTestCases.isEmpty()) return err("未生成测试用例", "请检查文档内容是否包含可测试的功能描述");
 
-            // 选择导出模板
+            // 选择模板
             com.example.demo.TestCaseTemplate tpl = AiService.getCurrentTemplate();
             if (tpl == null) tpl = com.example.demo.TestCaseTemplate.createUITemplate();
+            // 转置标准字段到模板 + 用户字段 + 默认值 + 去重
+            allTestCases = applyTemplateToCases(allTestCases, tpl, creator, relatedRequirement);
+            if (allTestCases.isEmpty()) return err("未生成测试用例", "请检查文档内容是否包含可测试的功能描述");
 
             // 按格式导出（xlsx/csv/json/markdown）
             byte[] data = ExcelExporter.exportByFormat(allTestCases, tpl, outputFormat);
@@ -217,6 +222,8 @@ public class TestCaseGeneratorController {
             @RequestParam(value = "type", defaultValue = "interface") String type,
             @RequestParam(value = "generateCount", defaultValue = "10") int generateCount,
             @RequestParam(value = "customTemplate", required = false) String customTemplate,
+            @RequestParam(value = "creator", required = false) String creator,
+            @RequestParam(value = "relatedRequirement", required = false) String relatedRequirement,
             @RequestParam(value = "outputFormat", defaultValue = "xlsx") String outputFormat,
             @RequestParam(value = "outputPath", required = false) String outputPath) {
 
@@ -243,11 +250,15 @@ public class TestCaseGeneratorController {
 
             if (allTestCases.isEmpty()) return err("未生成用例", "AI未能生成测试用例，请检查输入内容");
 
-            // 选择模板并按格式导出
+            // 选择模板
             com.example.demo.TestCaseTemplate tpl = AiService.getCurrentTemplate();
             if (tpl == null) tpl = "requirement".equals(type)
                     ? com.example.demo.TestCaseTemplate.createUITemplate()
                     : com.example.demo.TestCaseTemplate.createAPITemplate();
+            // 转置标准字段到模板 + 用户字段 + 默认值 + 去重
+            allTestCases = applyTemplateToCases(allTestCases, tpl, creator, relatedRequirement);
+            if (allTestCases.isEmpty()) return err("未生成用例", "AI未能生成测试用例");
+
             byte[] data = ExcelExporter.exportByFormat(allTestCases, tpl, outputFormat);
 
             String ext = "xlsx";
@@ -288,7 +299,7 @@ public class TestCaseGeneratorController {
             @RequestParam(value = "endPage", defaultValue = "50") int ep,
             @RequestParam(value = "customTemplate", required = false) String ct,
             @RequestParam(value = "outputPath", required = false) String op) {
-        return generateUI(file, rt, sp, ep, null, null, ct, "xlsx", op);
+        return generateUI(file, rt, sp, ep, null, null, ct, null, null, "xlsx", op);
     }
 
     @PostMapping("/generate-from-text") public ResponseEntity<?> generateText0(
@@ -300,9 +311,9 @@ public class TestCaseGeneratorController {
             @RequestParam(value = "readRangeType", defaultValue = "all") String rt,
             @RequestParam(value = "startPage", defaultValue = "1") int sp,
             @RequestParam(value = "endPage", defaultValue = "50") int ep) {
-        if (file != null && !file.isEmpty()) return generateUI(file, rt, sp, ep, null, null, ct, "xlsx", op);
+        if (file != null && !file.isEmpty()) return generateUI(file, rt, sp, ep, null, null, ct, null, null, "xlsx", op);
         String content = doc != null ? doc : "";
-        return generateText(content, type, 10, ct, "xlsx", op);
+        return generateText(content, type, 10, ct, null, null, "xlsx", op);
     }
 
     @PostMapping("/generate-from-url") public ResponseEntity<?> generateFromUrl(@RequestParam("url") String url) {
@@ -395,6 +406,62 @@ public class TestCaseGeneratorController {
     }
     private ResponseEntity<?> err(String m, String d) { return ResponseEntity.badRequest().contentType(MediaType.APPLICATION_JSON).body(ErrorResponse.badRequest(m, d)); }
     private ResponseEntity<?> err500(String m, String d) { return ResponseEntity.status(500).contentType(MediaType.APPLICATION_JSON).body(ErrorResponse.serverError(m, d)); }
+
+    /**
+     * 将标准字段转置到自定义模板字段（按名称映射，跨格式兼容）
+     * 处理用户自定义字段(创建人/关联需求) + 默认值(自动化/类型) + 全字段去重
+     */
+    private List<TestCase> applyTemplateToCases(List<TestCase> cases, com.example.demo.TestCaseTemplate tpl,
+            String creator, String relatedRequirement) {
+        java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
+        List<TestCase> result = new ArrayList<>();
+        for (TestCase tc : cases) {
+            Map<String, String> std = new HashMap<>(tc.getDynamicFields());
+            Map<String, String> transposed = new java.util.LinkedHashMap<>();
+            for (com.example.demo.TestCaseTemplate.TemplateField f : tpl.getFields()) {
+                String key = f.getFieldName();
+                String val = std.get(key);
+                // 别名匹配（如 API 的 expectedResponseJson → 预期结果）
+                if (val == null || val.isEmpty()) {
+                    val = findStandardValue(std, f.getDisplayName());
+                }
+                transposed.put(key, val == null ? "" : val);
+            }
+            tc.setDynamicFields(transposed);
+            // 创建人 / 关联需求：仅用用户定义值，否则清空（不采用AI猜测）
+            tc.setField("creator", (creator != null && !creator.isEmpty()) ? creator : "");
+            tc.setField("relatedRequirement", (relatedRequirement != null && !relatedRequirement.isEmpty()) ? relatedRequirement : "");
+            // 自动化：默认不填（强制清空）；类型：默认功能测试（强制覆盖）
+            tc.setField("isAutomated", "");
+            tc.setField("caseType", "功能测试");
+            // 全字段指纹去重
+            StringBuilder fingerprint = new StringBuilder();
+            for (Map.Entry<String, String> e : tc.getDynamicFields().entrySet()) {
+                if ("id".equals(e.getKey()) || "customRowData".equals(e.getKey())) continue;
+                fingerprint.append(e.getKey()).append("=")
+                          .append(e.getValue() == null ? "" : e.getValue().replaceAll("【[^】]*】", "").replaceAll("\\s+", "")).append("|");
+            }
+            if (seen.add(fingerprint.toString())) result.add(tc);
+        }
+        if (!result.isEmpty() && log.isDebugEnabled()) {
+            log.debug("转置后首条用例字段: {}", result.get(0).getDynamicFields());
+        }
+        return result;
+    }
+
+    private String findStandardValue(Map<String, String> std, String displayName) {
+        if (displayName == null) return null;
+        if (displayName.contains("预期结果") || displayName.contains("预期")) {
+            String v = std.get("expectedResult");
+            if (v == null || v.isEmpty()) v = std.get("expectedResponseJson");
+            return v;
+        }
+        if (displayName.contains("步骤") || displayName.contains("操作")) return std.get("steps");
+        if (displayName.contains("分组") || displayName.contains("模块")) return std.get("testModule");
+        if (displayName.contains("等级") || displayName.contains("优先级")) return std.get("priority");
+        if (displayName.contains("状态")) return std.get("status");
+        return null;
+    }
 
     /**
      * 按文件类型读取章节（支持 docx/pdf/md/txt）

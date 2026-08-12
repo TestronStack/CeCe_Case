@@ -679,16 +679,27 @@ public class AiService {
         if (!fewShot.isEmpty()) {
             prompt = fewShot + "\n\n" + prompt;
         }
-        // 自定义模板：强制替换 prompt 中的输出格式，AI只输出用户指定的列
+        // 自定义模板：完全替换输出格式定义，AI只输出用户指定的列
         if (currentTemplate != null) {
             String outputFormat = currentTemplate.getOutputFormat();
             int colCount = currentTemplate.getFields().size();
-            // 移除 prompt 中所有输出格式/示例行，替换为自定义格式
+            // 清除 prompt 中默认的输出格式说明和示例行（防止AI混用格式）
             prompt = prompt.replaceAll("(?m)^.*输出格式.*$", "")
                           .replaceAll("(?m)^.*\\d+列.*$", "")
-                          .replaceAll("(?m)^.*字段用.*分隔.*$", "");
-            prompt = prompt + "\n\n【特别注意】输出格式改为以下" + colCount + "列，字段用|分隔：\n" + outputFormat
-                    + "\n请严格遵守：每行输出这" + colCount + "个字段，不要输出多余内容！";
+                          .replaceAll("(?m)^.*字段用.*分隔.*$", "")
+                          .replaceAll("(?m)^.*输出示例.*$", "")
+                          .replaceAll("(?m)^\\s*(系统管理|业务功能|用户管理|EMPLOYEE|ORDER|系统管理\\|).*$", "")
+                          .replaceAll("(?m)^.*测试大模块\\|.*$", "")
+                          .replaceAll("(?m)^.*测试模块\\|.*$", "");
+            // 替换为自定义格式的强制指令
+            prompt = prompt + "\n\n" +
+                "【输出格式 - 严格遵守】\n" +
+                "每行输出且仅输出以下" + colCount + "列，字段间用 | 分隔：\n" +
+                outputFormat + "\n\n" +
+                "⚠️ 规则：\n" +
+                "1. 禁止输出Markdown表格、禁止输出字段名作为数据行、禁止输出任何额外说明文字\n" +
+                "2. 每行必须正好" + colCount + "个字段，值直接填，不要带列名\n" +
+                "3. 只输出这" + colCount + "列，其他任何格式都不要！";
         }
 
         try {
@@ -713,6 +724,16 @@ public class AiService {
                 if (line.contains("|") || line.contains("	")) {
                     // 使用 split("\\|", -1) 保留尾部空字符串
                     String[] parts = line.contains("|") ? line.split("\\|", -1) : line.split("\t", -1);
+                    // 过滤表头行：前3个字段如果都是默认/自定义表头名则跳过
+                    String[] headerNames = {"测试模块", "测试点", "用例标题", "前置条件", "接口路径", "请求方法",
+                            "测试大模块", "子模块", "测试点分类", "预置测试数据", "操作步骤", "量化预期结果",
+                            "标题", "所属分组", "创建人", "关联需求", "测试步骤", "预期结果", "状态", "等级", "类型"};
+                    int headerHits = 0;
+                    for (int hi = 0; hi < Math.min(3, parts.length); hi++) {
+                        String p = safeGet(parts, hi);
+                        for (String hn : headerNames) { if (p.contains(hn)) { headerHits++; break; } }
+                    }
+                    if (headerHits >= 2) continue;
                     // 过滤表头行和Markdown分隔行：检查前几个字段是否包含字段名或:---
                     if (parts.length >= 3) {
                         String p0 = safeGet(parts, 0), p1 = safeGet(parts, 1), p2 = safeGet(parts, 2);
@@ -722,18 +743,22 @@ public class AiService {
                             continue;
                         }
                     }
-                    // 自定义模板：用模板列数匹配，否则用默认23列解析
-                    int minCols = currentTemplate != null ? currentTemplate.getFields().size() : 23;
+                    // 判定AI输出格式：列数接近模板(±2)视为自定义格式，否则视为默认格式
+                    int tplCols = currentTemplate != null ? currentTemplate.getFields().size() : 23;
+                    int minCols = currentTemplate != null ? Math.min(tplCols, 23) : 23;
+                    boolean isCustomFormat = currentTemplate != null && parts.length <= tplCols + 2;
                     if (parts.length >= minCols) {
                         TestCase tc = new TestCase();
 
-                        if (currentTemplate != null) {
-                            // 自定义模板：按位置映射到模板字段key
+                        if (isCustomFormat) {
+                            // 自定义格式：按位置映射到模板字段key
                             for (int i = 0; i < currentTemplate.getFields().size() && i < parts.length; i++) {
                                 String key = currentTemplate.getFields().get(i).getFieldName();
-                                String val = safeGet(parts, i);
-                                tc.setField(key, val);
+                                tc.setField(key, safeGet(parts, i));
                             }
+                            // 兜底标准字段
+                            tc.setField("testModule", safeGet(parts, 1));
+                            tc.setField("title", safeGet(parts, 0));
                         } else {
                             // 默认24列API映射
                             tc.setField("testModule", safeGet(parts, 0));
@@ -1100,7 +1125,16 @@ public class AiService {
                 parts = line.split("\t", -1);
             }
 
-            if (parts != null && parts.length >= 10) {
+            // 自定义模板：按位置映射到模板字段key
+            if (parts != null && currentTemplate != null && parts.length >= currentTemplate.getFields().size()) {
+                for (int i = 0; i < currentTemplate.getFields().size() && i < parts.length; i++) {
+                    String key = currentTemplate.getFields().get(i).getFieldName();
+                    tc.setField(key, safeGet(parts, i));
+                }
+                // 默认值兜底
+                if (tc.getField("caseType") == null || tc.getField("caseType").isEmpty()) tc.setField("caseType", "功能测试");
+                if (tc.getField("isAutomated") == null || tc.getField("isAutomated").isEmpty()) tc.setField("isAutomated", "");
+            } else if (parts != null && parts.length >= 10) {
                 tc.setField("testModule", safeGet(parts, 0));
                 tc.setField("testPoint", safeGet(parts, 1));
                 tc.setField("title", safeGet(parts, 2));
@@ -1297,6 +1331,8 @@ public class AiService {
             else if (line.contains("	")) parts = line.split("\t", -1);
             int minCols = currentTemplate != null ? currentTemplate.getFields().size() : 14;
             if (parts != null && parts.length >= minCols) {
+                // 跳过 Markdown 表格行（首字段为空，如 "| 系统管理 | 用户管理 |"）
+                if (safeGet(parts, 0).isEmpty() && safeGet(parts, 1).isEmpty()) continue;
                 TestCase tc = new TestCase();
                 tc.setTestCaseType("UI");
                 if (currentTemplate != null) {
