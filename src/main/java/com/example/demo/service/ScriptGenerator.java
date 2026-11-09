@@ -131,59 +131,41 @@ public class ScriptGenerator {
 
     private static final String CLASS_TEMPLATE = """
             package com.example.tests;
-            
+
             import io.qameta.allure.*;
             import io.restassured.RestAssured;
-            import io.restassured.response.Response;
-            import io.restassured.specification.RequestSpecification;
+            import io.restassured.http.ContentType;
             import org.testng.annotations.BeforeClass;
-            import org.testng.annotations.AfterClass;
             import org.testng.annotations.Test;
-            import java.util.HashMap;
-            import java.util.Map;
-            import static org.testng.Assert.*;
+
             import static io.restassured.RestAssured.given;
-            
+            import static org.hamcrest.Matchers.*;
+
             @Epic("{EPIC}")
             @Feature("{FEATURE}")
             public class {CLASS_NAME} {
                 private String baseUrl = "{BASE_URL}";
-                private String token;
-            
+            {AUTH_FIELD}
+
                 @BeforeClass
                 public void setup() {
+                    // 若已接入自己的框架（框架统一配置了 RestAssured，如继承 BaseTest），请删除本方法
                     RestAssured.baseURI = baseUrl;
                     RestAssured.enableLoggingOfRequestAndResponseIfValidationFails();
-                    // TODO: 如需认证，在此处初始化 token
-                    // token = "your-auth-token";
                 }
-            
-                @AfterClass
-                public void teardown() {
-                    // Cleanup if needed
-                }
-            
-                private RequestSpecification givenWithHeaders() {
-                    RequestSpecification spec = given()
-                        .header("Content-Type", "application/json");
-                    // TODO: 如需认证，添加 Authorization header
-                    // if (token != null) spec.header("Authorization", "Bearer " + token);
-                    return spec;
-                }
-            
+
                 {TEST_METHODS}
             }
             """;
 
     private static final String TEST_METHOD_TEMPLATE = """
-            
+
                 @Test(description = "{DESCRIPTION}")
                 @Story("{STORY}")
                 @Severity(SeverityLevel.{SEVERITY})
                 @Step("{STEP_DESCRIPTION}")
                 public void {METHOD_NAME}() {
-                    {REQUEST_CODE}
-                    {ASSERTIONS}
+            {CHAIN}
                 }
             """;
 
@@ -215,12 +197,17 @@ public class ScriptGenerator {
             String testMethods = generateTestMethods(interfaceTestCases);
             String epic = interfaceTestCases.get(0).getTestModule() != null ? interfaceTestCases.get(0).getTestModule() : "API测试";
             String feature = interfaceName;
+            // 该接口的用例需要认证时，生成 token 字段（登录后赋值，链式请求自动带 Authorization 头）
+            String authField = classNeedsAuth(interfaceTestCases)
+                    ? "    /** TODO: 登录后把 token 赋值到这里，需要认证的接口会自动带上 Authorization: Bearer token */\n    private String token;"
+                    : "";
 
             String classContent = CLASS_TEMPLATE
                     .replace("{EPIC}", epic)
                     .replace("{FEATURE}", feature)
                     .replace("{CLASS_NAME}", className)
-                    .replace("{BASE_URL}", baseUrl != null ? baseUrl : "http://localhost:8080");
+                    .replace("{BASE_URL}", baseUrl != null ? baseUrl : "http://localhost:8080")
+                    .replace("{AUTH_FIELD}", authField);
 
             classContent = classContent.replace("{TEST_METHODS}", testMethods);
 
@@ -248,6 +235,14 @@ public class ScriptGenerator {
      * 生成测试脚本到字节数组（用于下载）
      */
     public static byte[] generateScriptAsZip(List<TestCase> testCases, String baseUrl) throws IOException {
+        return generateScriptAsZip(testCases, baseUrl, null, null);
+    }
+
+    /**
+     * 生成测试脚本到字节数组（用于下载），可附带额外文件（如接口测试用例 Excel）一起打包进 ZIP。
+     * 脚本严格基于传入的 testCases 生成，确保「测试用例 = 脚本来源」一一对应。
+     */
+    public static byte[] generateScriptAsZip(List<TestCase> testCases, String baseUrl, String extraFileName, byte[] extraFileBytes) throws IOException {
         Path tempDir = Files.createTempDirectory("api-automation");
         Path srcDir = tempDir.resolve("src").resolve("test").resolve("java").resolve("com").resolve("example").resolve("tests");
         Files.createDirectories(srcDir);
@@ -265,18 +260,28 @@ public class ScriptGenerator {
             String testMethods = generateTestMethods(interfaceTestCases);
             String epic = interfaceTestCases.get(0).getTestModule() != null ? interfaceTestCases.get(0).getTestModule() : "API测试";
             String feature = interfaceName;
+            // 该接口的用例需要认证时，生成 token 字段（登录后赋值，链式请求自动带 Authorization 头）
+            String authField = classNeedsAuth(interfaceTestCases)
+                    ? "    /** TODO: 登录后把 token 赋值到这里，需要认证的接口会自动带上 Authorization: Bearer token */\n    private String token;"
+                    : "";
 
             String classContent = CLASS_TEMPLATE
                     .replace("{EPIC}", epic)
                     .replace("{FEATURE}", feature)
                     .replace("{CLASS_NAME}", className)
-                    .replace("{BASE_URL}", baseUrl != null ? baseUrl : "http://localhost:8080");
+                    .replace("{BASE_URL}", baseUrl != null ? baseUrl : "http://localhost:8080")
+                    .replace("{AUTH_FIELD}", authField);
 
             classContent = classContent.replace("{TEST_METHODS}", testMethods);
 
             Path classFile = srcDir.resolve(className + ".java");
             Files.writeString(classFile, classContent, StandardCharsets.UTF_8);
             generatedClasses.add(className);
+        }
+
+        // 额外文件（如接口测试用例 Excel）打进 ZIP 根目录
+        if (extraFileName != null && extraFileBytes != null) {
+            Files.write(tempDir.resolve(extraFileName), extraFileBytes);
         }
 
         Files.writeString(tempDir.resolve("pom.xml"), POM_TEMPLATE, StandardCharsets.UTF_8);
@@ -298,8 +303,7 @@ public class ScriptGenerator {
 
         for (TestCase tc : testCases) {
             String methodName = generateMethodName(tc.getTitle());
-            String requestCode = generateRequestCode(tc);
-            String assertions = generateAssertions(tc);
+            String chain = generateChainedCode(tc);
             String severity = mapSeverity(tc.getTitle());
             String story = tc.getTestPoint() != null ? tc.getTestPoint() : tc.getTitle();
 
@@ -309,8 +313,7 @@ public class ScriptGenerator {
                     .replace("{SEVERITY}", severity)
                     .replace("{STEP_DESCRIPTION}", tc.getSteps() != null ? tc.getSteps() : tc.getTitle())
                     .replace("{METHOD_NAME}", methodName)
-                    .replace("{REQUEST_CODE}", requestCode)
-                    .replace("{ASSERTIONS}", assertions);
+                    .replace("{CHAIN}", chain);
 
             methods.append(methodContent);
         }
@@ -318,40 +321,102 @@ public class ScriptGenerator {
         return methods.toString();
     }
 
-    private static String generateRequestCode(TestCase tc) {
+    /**
+     * 生成链式调用风格的请求+断言代码（RestAssured 的 given().when().then()），
+     * 例如：
+     *   given()
+     *       .contentType(ContentType.JSON)
+     *       .body("{\"username\":\"admin\",\"password\":\"123456\"}")
+     *       .when()
+     *       .post("/admin/employee/login")
+     *       .then()
+     *       .statusCode(200)
+     *       .body("code", equalTo(0));
+     */
+    private static String generateChainedCode(TestCase tc) {
         String method = tc.getMethod() != null ? tc.getMethod().toUpperCase() : "POST";
         String path = tc.getInterfacePath() != null ? tc.getInterfacePath() : "/api/unknown";
         String params = tc.getParams();
 
+        // 对齐方法体缩进：given/when/then 首层 20 空格，链式续行 28 空格
+        String bodyIndent = "                    ";
+        String chainIndent = "                            ";
         StringBuilder code = new StringBuilder();
 
-        // 根据请求方法生成不同的代码
+        code.append(bodyIndent).append("given()\n");
+
         if ("GET".equals(method)) {
-            code.append("        Response response = givenWithHeaders()\n");
-            // 如果有参数，作为 query params 传递
-            if (params != null && !params.isEmpty()) {
-                Map<String, String> queryParams = parseParamsToMap(params);
-                for (Map.Entry<String, String> entry : queryParams.entrySet()) {
-                    code.append("            .param(\"").append(entry.getKey()).append("\", \"").append(entry.getValue()).append("\")\n");
-                }
+            // GET 用 queryParam 传参
+            if (needsAuth(tc, path)) {
+                code.append(chainIndent).append(".header(\"Authorization\", \"Bearer \" + token)\n");
             }
-            code.append("            .get(\"").append(path).append("\");\n");
-        } else if ("DELETE".equals(method)) {
-            code.append("        Response response = givenWithHeaders()\n");
-            if (params != null && !params.isEmpty()) {
-                String body = parseParamsToJsonBody(params);
-                code.append("            .body(\"").append(escapeJson(body)).append("\")\n");
+            Map<String, String> queryParams = parseParamsToMap(params);
+            for (Map.Entry<String, String> entry : queryParams.entrySet()) {
+                code.append(chainIndent).append(".queryParam(\"").append(entry.getKey()).append("\", \"").append(entry.getValue()).append("\")\n");
             }
-            code.append("            .delete(\"").append(path).append("\");\n");
         } else {
-            // POST, PUT, PATCH 等使用 JSON body
-            code.append("        Response response = givenWithHeaders()\n");
-            String body = parseParamsToJsonBody(params);
-            code.append("            .body(\"").append(escapeJson(body)).append("\")\n");
-            code.append("            .").append(method.toLowerCase()).append("(\"").append(path).append("\");\n");
+            // POST/PUT/PATCH 使用 JSON body；DELETE 无参数时（如路径参数）不带 body
+            boolean hasBody = params != null && !params.trim().isEmpty() && !"{}".equals(params.trim());
+            if (hasBody || !"DELETE".equals(method)) {
+                code.append(chainIndent).append(".contentType(ContentType.JSON)\n");
+            }
+            if (needsAuth(tc, path)) {
+                code.append(chainIndent).append(".header(\"Authorization\", \"Bearer \" + token)\n");
+            }
+            if (hasBody) {
+                String body = parseParamsToJsonBody(params);
+                code.append(chainIndent).append(".body(\"").append(escapeJson(body)).append("\")\n");
+            }
         }
 
-        return code.toString();
+        code.append(bodyIndent).append(".when()\n");
+        code.append(chainIndent).append(".").append(method.toLowerCase()).append("(\"").append(path).append("\")\n");
+        code.append(bodyIndent).append(".then()\n");
+
+        // 断言：HTTP 状态码 + 业务码 + 业务消息
+        int expectedCode = tc.getExpectedStatusCode() != null && tc.getExpectedStatusCode() > 0 ? tc.getExpectedStatusCode() : 200;
+        code.append(chainIndent).append(".statusCode(").append(expectedCode).append(")\n");
+
+        if (tc.getExpectedBusinessCode() != null && tc.getExpectedBusinessCode() > 0) {
+            code.append(chainIndent).append(".body(\"code\", equalTo(").append(tc.getExpectedBusinessCode()).append("))\n");
+        }
+
+        // 只有预期结果明确含「成功」关键字时，才生成消息断言（避免对错误提示猜错文案）
+        String expectedResult = tc.getExpectedResult();
+        if (expectedResult != null && expectedResult.contains("成功")) {
+            String expectedMsg = extractExpectedMessage(expectedResult);
+            if (!expectedMsg.isEmpty()) {
+                code.append(chainIndent).append(".body(\"msg\", containsString(\"").append(expectedMsg).append("\"))\n");
+            }
+        }
+
+        // 去掉最后一个换行，以分号收尾
+        String result = code.toString();
+        result = result.substring(0, result.length() - 1) + ";";
+        return result;
+    }
+
+    /**
+     * 判断该用例的请求是否需要携带 Authorization 头。
+     * 以用例「请求头」列是否含 Authorization 为准；登录/注册/退出等免认证端点除外（避免误带头导致 401）。
+     */
+    private static boolean needsAuth(TestCase tc, String path) {
+        String headers = tc.getCompleteHeaders();
+        if (headers == null || !headers.toLowerCase().contains("authorization")) return false;
+        String p = path == null ? "" : path.toLowerCase();
+        return !(p.contains("/login") || p.contains("/register") || p.contains("/logout")
+                || p.contains("/auth") || p.contains("/captcha") || p.contains("/sms")
+                || p.contains("/verify") || p.contains("/token"));
+    }
+
+    /**
+     * 判断整组用例中是否有任意一条需要认证，从而决定类里是否生成 token 字段
+     */
+    private static boolean classNeedsAuth(List<TestCase> testCases) {
+        for (TestCase tc : testCases) {
+            if (needsAuth(tc, tc.getInterfacePath())) return true;
+        }
+        return false;
     }
 
     /**
@@ -423,48 +488,14 @@ public class ScriptGenerator {
         return json.toString();
     }
 
-    private static String generateAssertions(TestCase tc) {
-        StringBuilder assertions = new StringBuilder();
-
-        int expectedCode = tc.getExpectedStatusCode() > 0 ? tc.getExpectedStatusCode() : 200;
-        assertions.append("        // 状态码断言\n");
-        assertions.append("        assertEquals(response.getStatusCode(), ").append(expectedCode).append(", \"HTTP状态码不符合预期\");\n");
-
-        // 业务码断言（如果有的话）
-        if (tc.getExpectedBusinessCode() != null && tc.getExpectedBusinessCode() > 0) {
-            assertions.append("\n        // 业务码断言\n");
-            assertions.append("        Integer businessCode = response.jsonPath().get(\"code\");\n");
-            assertions.append("        if (businessCode != null) {\n");
-            assertions.append("            assertEquals(businessCode, ").append(tc.getExpectedBusinessCode()).append(", \"业务码不符合预期\");\n");
-            assertions.append("        }\n");
-        }
-
-        // 响应体断言（改进版）
-        assertions.append("\n        // 响应体基本断言\n");
-        assertions.append("        assertNotNull(response.getBody(), \"响应体不应为空\");\n");
-        assertions.append("        String responseBody = response.getBody().asString();\n");
-        assertions.append("        assertNotNull(responseBody, \"响应内容不应为空\");\n");
-
-        // 预期结果断言（灵活处理）
-        if (tc.getExpectedResult() != null && !tc.getExpectedResult().isEmpty()) {
-            String expectedMsg = extractExpectedMessage(tc.getExpectedResult());
-            if (!expectedMsg.isEmpty()) {
-                assertions.append("\n        // 业务消息断言（可选，根据实际接口响应结构调整）\n");
-                assertions.append("        // TODO: 根据实际接口响应结构调整断言逻辑\n");
-                assertions.append("        // String msg = response.jsonPath().getString(\"msg\");\n");
-                assertions.append("        // if (msg != null) assertTrue(msg.contains(\"").append(expectedMsg).append("\"), \"消息不符合预期\");\n");
-            }
-        }
-
-        return assertions.toString();
-    }
-
     private static String extractInterfaceName(String interfacePath) {
         if (interfacePath == null || interfacePath.isEmpty()) {
             return "Unknown";
         }
 
         String path = interfacePath.replace("/api/", "").replace("/", "_");
+        // 去除非法文件名字符（? & = : * " < > | \ 空白 及各类符号），统一替换为下划线
+        path = path.replaceAll("[?&=:;*\"<>|\\\\()\\[\\]{}!@#$%^,'+ ]", "_");
         if (path.startsWith("_")) {
             path = path.substring(1);
         }
@@ -472,7 +503,12 @@ public class ScriptGenerator {
             path = path.substring(0, path.length() - 1);
         }
 
-        return toCamelCase(path);
+        String name = toCamelCase(path);
+        // Java 类名必须以字母开头；以数字/下划线开头或为空时加 Api 前缀
+        if (name.isEmpty() || !Character.isLetter(name.charAt(0))) {
+            name = "Api" + name;
+        }
+        return name;
     }
 
     private static String generateMethodName(String title) {
@@ -523,14 +559,15 @@ public class ScriptGenerator {
         }
 
         String lower = title.toLowerCase();
+        // 注意：Allure SeverityLevel 只有 BLOCKER/CRITICAL/NORMAL/MINOR/TRIVIAL，没有 HIGH/MEDIUM
         if (lower.contains("成功") || lower.contains("正常")) {
             return "CRITICAL";
         }
-        if (lower.contains("失败") || lower.contains("异常") || lower.contains("错误")) {
-            return "HIGH";
-        }
         if (lower.contains("边界") || lower.contains("参数")) {
-            return "MEDIUM";
+            return "MINOR";
+        }
+        if (lower.contains("失败") || lower.contains("异常") || lower.contains("错误")) {
+            return "NORMAL";
         }
         return "NORMAL";
     }
@@ -593,6 +630,21 @@ public class ScriptGenerator {
         sb.append("## 项目说明\n");
         sb.append("本项目包含自动生成的接口自动化测试脚本，使用 TestNG + RestAssured + Allure 技术栈。\n\n");
         sb.append("## ⚠️ 重要说明\n");
+        sb.append("### 代码风格\n");
+        sb.append("测试方法使用 RestAssured 链式写法 `given().when().then()`，一眼能看出请求和断言：\n");
+        sb.append("```java\n");
+        sb.append("given()\n");
+        sb.append("    .contentType(ContentType.JSON)\n");
+        sb.append("    .body(\"{\\\"username\\\":\\\"admin\\\",\\\"password\\\":\\\"123456\\\"}\")\n");
+        sb.append("    .when()\n");
+        sb.append("    .post(\"/admin/employee/login\")\n");
+        sb.append("    .then()\n");
+        sb.append("    .statusCode(200)\n");
+        sb.append("    .body(\"code\", equalTo(0));\n");
+        sb.append("```\n\n");
+        sb.append("### 断言字段说明\n");
+        sb.append("- 状态码断言固定生成；业务码断言取响应的 `code` 字段；成功类用例会额外断言 `msg` 字段。\n");
+        sb.append("- 若实际接口字段名不同（如 `message`、`data.code`），微调 `.body(...)` 里的 JSONPath 即可。\n\n");
         sb.append("### 当前支持的请求模式\n");
         sb.append("- **JSON 模式**：请求参数作为 JSON body 发送（POST/PUT/PATCH/DELETE）\n");
         sb.append("- **Query Params 模式**：请求参数作为 URL query params 发送（GET）\n\n");
@@ -602,19 +654,15 @@ public class ScriptGenerator {
         sb.append("- 嵌套 JSON 结构参数（需手动构建复杂的 JSON body）\n");
         sb.append("- 自定义认证方式（如 OAuth2、API Key 等）\n\n");
         sb.append("## 基础配置\n");
-        sb.append("修改测试类中的 `baseUrl` 变量为实际的 API 地址：\n");
+        sb.append("修改测试类中的 `baseUrl` 变量为实际的 API 地址（接入自己的框架后，改由框架配置 RestAssured，可删除 `setup()` 方法）：\n");
         sb.append("```java\n");
         sb.append("private String baseUrl = \"").append(baseUrl != null ? baseUrl : "http://localhost:8080").append("\";\n");
         sb.append("```\n\n");
         sb.append("## 认证配置\n");
-        sb.append("如果接口需要认证，请修改 `givenWithHeaders()` 方法：\n");
+        sb.append("需要认证的接口会自动带上 `Authorization: Bearer <token>`，登录后把 token 赋值给类里的 `token` 字段即可：\n");
         sb.append("```java\n");
-        sb.append("private RequestSpecification givenWithHeaders() {\n");
-        sb.append("    RequestSpecification spec = given()\n");
-        sb.append("        .header(\"Content-Type\", \"application/json\")\n");
-        sb.append("        .header(\"Authorization\", \"Bearer YOUR_TOKEN\");\n");
-        sb.append("    return spec;\n");
-        sb.append("}\n");
+        sb.append("// 从登录接口的响应里取 token，例如：token = response.jsonPath().getString(\"data.token\");\n");
+        sb.append("token = \"这里填登录返回的 token\";\n");
         sb.append("```\n\n");
         sb.append("## 运行命令\n\n");
         sb.append("### 运行测试\n");
@@ -684,6 +732,13 @@ public class ScriptGenerator {
      * 生成 Python (requests + pytest + allure) 自动化测试脚本并打包为 ZIP
      */
     public static byte[] generatePythonScriptAsZip(List<TestCase> testCases, String baseUrl) throws IOException {
+        return generatePythonScriptAsZip(testCases, baseUrl, null, null);
+    }
+
+    /**
+     * 生成 Python 自动化测试脚本并打包为 ZIP，可附带额外文件（如接口测试用例 Excel）
+     */
+    public static byte[] generatePythonScriptAsZip(List<TestCase> testCases, String baseUrl, String extraFileName, byte[] extraFileBytes) throws IOException {
         Path tempDir = Files.createTempDirectory("py-automation");
         Path testsDir = tempDir.resolve("tests");
         Files.createDirectories(testsDir);
@@ -731,6 +786,11 @@ public class ScriptGenerator {
                 idx++;
             }
             Files.write(testsDir.resolve("test_" + module + ".py"), py.toString().getBytes(StandardCharsets.UTF_8));
+        }
+
+        // 额外文件（如接口测试用例 Excel）打进 ZIP 根目录
+        if (extraFileName != null && extraFileBytes != null) {
+            Files.write(tempDir.resolve(extraFileName), extraFileBytes);
         }
 
         String reqs = "requests\npytest\nallure-pytest\n";

@@ -49,7 +49,7 @@ public class TestCaseGeneratorController {
 
         try {
             initAi();
-            if (AiService.getModel() == null) return err("AI模型未初始化", "请配置 DASHSCOPE_API_KEY / DEEPSEEK_API_KEY");
+            if (AiService.getModel() == null) return err("AI模型未初始化", "请配置 DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / DOUBAO_API_KEY / GLM_API_KEY / OPENAI_API_KEY / AI_API_KEY 环境变量");
 
             String fp = saveTempFile(file);
             String fname = file.getOriginalFilename().toLowerCase();
@@ -179,13 +179,30 @@ public class TestCaseGeneratorController {
             List<String> interfaces = extractInterfaces(fp, file.getOriginalFilename(), readRangeType, startPage, endPage);
             if (interfaces.isEmpty()) return err("未提取到接口", "文档中未找到API定义");
 
+            // 接口用例数量控制：每个接口最多 8 条（等价类/边界值/场景法合并，宁少勿滥）
             AiService.resetCounter();
+            AiService.setApiCaseCap(8);
             List<TestCase> allTestCases = new ArrayList<>();
-            for (String api : interfaces) allTestCases.addAll(AiService.generateTestCases(api));
+            int totalIfaces = interfaces.size();
+            for (int i = 0; i < totalIfaces; i++) {
+                String api = interfaces.get(i);
+                log.info("生成接口用例 [{}/{}]: {}", i + 1, totalIfaces, firstLine(api));
+                List<TestCase> cases = AiService.generateTestCases(api);
+                log.info("接口 [{}/{}] 生成 {} 条用例，累计 {} 条", i + 1, totalIfaces, cases.size(), allTestCases.size() + cases.size());
+                allTestCases.addAll(cases);
+            }
+            if (allTestCases.isEmpty()) return err("未生成测试用例", "AI 未能根据接口文档生成测试用例");
+            // 整份文档总量上限裁剪（优先保留 P0/P1）
+            allTestCases = AiService.enforceApiTotalBudget(allTestCases);
+
+            // 接口测试用例：转置到 24 列 API 模板 + 全字段去重（自动化脚本严格基于这些用例生成）
+            com.example.demo.TestCaseTemplate tpl = com.example.demo.TestCaseTemplate.createAPITemplate();
+            allTestCases = applyTemplateToCases(allTestCases, tpl, null, null);
+            byte[] caseExcel = ExcelExporter.exportByFormat(allTestCases, tpl, "xlsx");
 
             byte[] zipBytes = "python".equalsIgnoreCase(language)
-                    ? ScriptGenerator.generatePythonScriptAsZip(allTestCases, baseUrl)
-                    : ScriptGenerator.generateScriptAsZip(allTestCases, baseUrl);
+                    ? ScriptGenerator.generatePythonScriptAsZip(allTestCases, baseUrl, "接口测试用例.xlsx", caseExcel)
+                    : ScriptGenerator.generateScriptAsZip(allTestCases, baseUrl, "接口测试用例.xlsx", caseExcel);
 
             String fname = "api-automation-" + LocalDateTime.now().format(DF) + ".zip";
 
@@ -196,7 +213,8 @@ public class TestCaseGeneratorController {
                 Files.createDirectories(p.getParent());
                 Files.write(p, zipBytes);
                 return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON)
-                        .body(Map.of("message", "自动化脚本已生成", "path", p.toString()));
+                        .body(Map.of("message", "自动化脚本已生成（含接口测试用例 " + allTestCases.size() + " 条）",
+                                "path", p.toString(), "count", allTestCases.size()));
             }
 
             HttpHeaders h = new HttpHeaders();
@@ -209,6 +227,82 @@ public class TestCaseGeneratorController {
             return err500("文件操作失败", e.getMessage());
         } catch (Exception e) {
             log.error("生成脚本失败", e);
+            return err500("生成失败", e.getMessage());
+        }
+    }
+
+    // ================================================================
+    //  功能2.1：接口文档 → 接口测试用例（只导用例，不生成脚本）
+    // ================================================================
+    @PostMapping("/generate-api")
+    public ResponseEntity<?> generateApi(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "readRangeType", defaultValue = "all") String readRangeType,
+            @RequestParam(value = "startPage", defaultValue = "1") int startPage,
+            @RequestParam(value = "endPage", defaultValue = "50") int endPage,
+            @RequestParam(value = "outputFormat", defaultValue = "xlsx") String outputFormat,
+            @RequestParam(value = "outputPath", required = false) String outputPath) {
+
+        try {
+            initAi();
+            if (AiService.getModel() == null) return err("AI模型未初始化", "请配置 API Key");
+
+            String fp = saveTempFile(file);
+            List<String> interfaces = extractInterfaces(fp, file.getOriginalFilename(), readRangeType, startPage, endPage);
+            if (interfaces.isEmpty()) return err("未提取到接口", "文档中未找到API定义");
+
+            // 接口用例数量控制：每个接口最多 8 条（等价类/边界值/场景法合并，宁少勿滥）
+            AiService.resetCounter();
+            AiService.setApiCaseCap(8);
+            List<TestCase> allTestCases = new ArrayList<>();
+            int totalIfaces = interfaces.size();
+            for (int i = 0; i < totalIfaces; i++) {
+                String api = interfaces.get(i);
+                log.info("生成接口用例 [{}/{}]: {}", i + 1, totalIfaces, firstLine(api));
+                List<TestCase> cases = AiService.generateTestCases(api);
+                log.info("接口 [{}/{}] 生成 {} 条用例，累计 {} 条", i + 1, totalIfaces, cases.size(), allTestCases.size() + cases.size());
+                allTestCases.addAll(cases);
+            }
+            if (allTestCases.isEmpty()) return err("未生成测试用例", "AI 未能根据接口文档生成测试用例");
+            // 整份文档总量上限裁剪（优先保留 P0/P1）
+            allTestCases = AiService.enforceApiTotalBudget(allTestCases);
+
+            // 接口测试用例：转置到 24 列 API 模板 + 全字段去重 + 数字字段规范化
+            com.example.demo.TestCaseTemplate tpl = com.example.demo.TestCaseTemplate.createAPITemplate();
+            allTestCases = applyTemplateToCases(allTestCases, tpl, null, null);
+            if (allTestCases.isEmpty()) return err("未生成测试用例", "AI 未能根据接口文档生成测试用例");
+
+            byte[] data = ExcelExporter.exportByFormat(allTestCases, tpl, outputFormat);
+
+            Files.walk(Paths.get(fp).getParent()).sorted(java.util.Comparator.reverseOrder())
+                    .map(Path::toFile).forEach(File::delete);
+
+            String ext = "xlsx";
+            if ("csv".equalsIgnoreCase(outputFormat)) ext = "csv";
+            else if ("json".equalsIgnoreCase(outputFormat)) ext = "json";
+            else if ("md".equalsIgnoreCase(outputFormat) || "markdown".equalsIgnoreCase(outputFormat)) ext = "md";
+            String fname = DownloadHelper.toAscii("api_testcases_" + LocalDateTime.now().format(DF) + "." + ext);
+
+            if (outputPath != null && !outputPath.trim().isEmpty()) {
+                Path p = Paths.get(outputPath);
+                if (Files.isDirectory(p)) p = p.resolve(fname);
+                else if (!outputPath.toLowerCase().endsWith("." + ext)) p = Paths.get(outputPath + "." + ext);
+                Files.createDirectories(p.getParent());
+                Files.write(p, data);
+                return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON)
+                        .body(Map.of("message", "接口测试用例已生成", "path", p.toString(), "count", allTestCases.size()));
+            }
+
+            MediaType mt = "xlsx".equals(ext) ? MediaType.APPLICATION_OCTET_STREAM
+                    : "csv".equals(ext) ? MediaType.parseMediaType("text/csv")
+                    : "json".equals(ext) ? MediaType.APPLICATION_JSON
+                    : MediaType.parseMediaType("text/markdown");
+            return DownloadHelper.fileDownload(data, fname, mt);
+
+        } catch (IOException e) {
+            return err500("文件操作失败", e.getMessage());
+        } catch (Exception e) {
+            log.error("生成接口用例失败", e);
             return err500("生成失败", e.getMessage());
         }
     }
@@ -340,7 +434,7 @@ public class TestCaseGeneratorController {
         List<Map<String, String>> models = new ArrayList<>();
         models.add(Map.of("id", "deepseek-chat", "name", "DeepSeek Chat", "multimodal", "false", "desc", "性价比高，默认"));
         models.add(Map.of("id", "qwen-vl-max", "name", "通义千问 Qwen-VL", "multimodal", "true", "desc", "支持图像理解"));
-        models.add(Map.of("id", "doubao-vision", "name", "豆包 Vision", "multimodal", "true", "desc", "视觉理解"));
+        models.add(Map.of("id", "doubao-seed-1-6-vision-250815", "name", "豆包 Vision（doubao-seed-1-6-vision）", "multimodal", "true", "desc", "视觉理解"));
         models.add(Map.of("id", "gpt-4o", "name", "OpenAI GPT-4o", "multimodal", "true", "desc", "多模态旗舰"));
         models.add(Map.of("id", "glm-4v", "name", "智谱 GLM-4V", "multimodal", "true", "desc", "视觉理解"));
         return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON)
@@ -388,6 +482,14 @@ public class TestCaseGeneratorController {
         file.transferTo(new File(fp));
         return fp;
     }
+    /** 取接口块首行（方法 + 路径），用于进度日志展示 */
+    private String firstLine(String s) {
+        if (s == null || s.isEmpty()) return "";
+        for (String l : s.split("\n")) {
+            if (!l.trim().isEmpty()) return l.trim();
+        }
+        return "";
+    }
     private List<String> extractInterfaces(String fp, String name, String range, int sp, int ep) {
         name = name.toLowerCase();
         if (name.endsWith(".docx")) return "page".equals(range) ? DocumentProcessor.extractFromDocx(fp, sp, ep) : DocumentProcessor.extractFromDocx(fp);
@@ -421,6 +523,8 @@ public class TestCaseGeneratorController {
             for (com.example.demo.TestCaseTemplate.TemplateField f : tpl.getFields()) {
                 String key = f.getFieldName();
                 String val = std.get(key);
+                // 用例编号存在独立字段（setId 不写入 dynamicFields），转置时需显式带入
+                if (val == null && "id".equals(key)) val = tc.getId();
                 // 别名匹配（如 API 的 expectedResponseJson → 预期结果）
                 if (val == null || val.isEmpty()) {
                     val = findStandardValue(std, f.getDisplayName());
@@ -428,6 +532,9 @@ public class TestCaseGeneratorController {
                 transposed.put(key, val == null ? "" : val);
             }
             tc.setDynamicFields(transposed);
+            // 数字字段规范化：预期状态码/业务码只保留数字，避免自然语言描述混入导致脚本生成崩溃
+            normalizeNumericField(tc, "expectedStatusCode", true);
+            normalizeNumericField(tc, "expectedBusinessCode", false);
             // 创建人 / 关联需求：仅用用户定义值，否则清空（不采用AI猜测）
             tc.setField("creator", (creator != null && !creator.isEmpty()) ? creator : "");
             tc.setField("relatedRequirement", (relatedRequirement != null && !relatedRequirement.isEmpty()) ? relatedRequirement : "");
@@ -451,6 +558,8 @@ public class TestCaseGeneratorController {
 
     private String findStandardValue(Map<String, String> std, String displayName) {
         if (displayName == null) return null;
+        // 预期状态码/业务码是数字字段，不可用整段自然语言预期结果填充（否则脚本生成 parseInt 会崩溃）
+        if (displayName.contains("状态码") || displayName.contains("业务码")) return null;
         if (displayName.contains("预期结果") || displayName.contains("预期")) {
             String v = std.get("expectedResult");
             if (v == null || v.isEmpty()) v = std.get("expectedResponseJson");
@@ -461,6 +570,17 @@ public class TestCaseGeneratorController {
         if (displayName.contains("等级") || displayName.contains("优先级")) return std.get("priority");
         if (displayName.contains("状态")) return std.get("status");
         return null;
+    }
+
+    /**
+     * 数字字段规范化：非纯数字的字段值（如 AI 生成的 "返回200+{...}"）提取出数字，
+     * 提取不到则清空，保证导出/脚本生成阶段不会因 Integer.parseInt 崩溃。
+     */
+    private void normalizeNumericField(TestCase tc, String field, boolean statusCode) {
+        String v = tc.getField(field);
+        if (v == null || v.isEmpty() || v.trim().matches("\\d+")) return;
+        Integer code = statusCode ? TestCase.extractStatusCode(v) : TestCase.extractInteger(v);
+        tc.setField(field, code != null ? code.toString() : "");
     }
 
     /**

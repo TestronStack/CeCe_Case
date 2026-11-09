@@ -423,11 +423,8 @@ public class WordParser {
         }
         if (currentApi.length() > 0) allInterfaces.add(currentApi.toString());
         allInterfaces.removeIf(api -> api.length() < 5 || !api.contains("/"));
-        List<String> unique = new ArrayList<>();
-        for (String api : allInterfaces) {
-            if (!unique.stream().anyMatch(api::contains)) unique.add(api);
-        }
-        return unique;
+        // 按「方法+规范化路径」去重：同一接口在文档多处出现只保留一次，并过滤 curl 示例
+        return PdfParser.dedupeInterfaces(allInterfaces);
     }
 
     public static List<String> getExampleInterfaces() {

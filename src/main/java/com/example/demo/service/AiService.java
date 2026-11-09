@@ -15,6 +15,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * AI服务类
@@ -44,18 +46,214 @@ public class AiService {
     public static void setGenerateCount(int count) { currentGenerateCount = count > 0 ? count : 10; }
     public static int getGenerateCount() { return currentGenerateCount; }
 
-    /** 测试设计方法要求（模块2） */
+    /** 接口文档流程：每个接口最多生成的用例数（硬上限，超出裁剪保留 P0/P1）；0=不启用（走 currentGenerateCount） */
+    private static int apiCaseCap = 0;
+    /** 接口文档流程：整份文档用例总量上限 */
+    private static final int API_TOTAL_BUDGET = 100;
+
+    public static void setApiCaseCap(int cap) { apiCaseCap = cap > 0 ? cap : 0; }
+    public static int getApiCaseCap() { return apiCaseCap; }
+    public static int getApiTotalBudget() { return API_TOTAL_BUDGET; }
+
+    /** 测试设计方法要求（模块2）：覆盖充分且类型均衡，同时遵循"1测试点=1用例"粒度 */
     private static final String DESIGN_METHOD_REQUIREMENT = """
 
             【测试设计方法要求】
-            请综合运用以下测试设计方法生成用例，保证覆盖充分且类型均衡（不能全是同一种）：
-            1. 等价类划分：对每个输入字段，识别有效/无效等价类，各至少1条
-            2. 边界值分析：对数值范围/长度限制，取 min、max、min-1、max+1 生成用例
-            3. 判定表：存在多条件组合逻辑时，覆盖条件组合
+            请综合运用以下测试设计方法设计用例，保证覆盖充分且类型均衡（不能全是同一种）。
+            但必须遵循"1个测试点 = 1条用例"的粒度：同一类测试场景合并为一条代表性用例，
+            并在用例标题或预期结果中注明覆盖范围，禁止把每个等价类/每个边界值拆成多条用例：
+            1. 等价类划分：对每个输入字段识别有效/无效等价类，合并为1条代表性用例
+            2. 边界值分析：将 min、max、min-1、max+1 等边界合并进1条边界用例
+            3. 判定表：存在多条件组合逻辑时，覆盖关键条件组合
             4. 场景法：识别主流程、备选流程、异常流程，生成端到端场景用例
-            5. 错误推测法：覆盖空值、超长、特殊字符、SQL注入特征等常见错误
-            每条用例的标题开头用【】标注其主要设计方法，如【等价类】【边界值】【判定表】【场景法】【错误推测法】。
+            5. 错误推测法：覆盖空值、超长、特殊字符、SQL注入特征等常见错误，同类错误合并为1条
+            测试设计方法只用于内部组织测试点，不能写入用例标题、步骤或预期结果。
+            标题只描述具体页面、功能或测试目标，不要添加【等价类】【边界值】【判定表】【场景法】【错误推测法】等方法标签。
             """;
+
+    /** 用例生成约束（模块8）：粒度 / 优先级 / 非功能性过滤 */
+    private static final String GENERATION_CONSTRAINTS = """
+
+            【用例生成约束】
+            1. 用例粒度：1个独立测试点 = 1条用例。同一类测试场景（如"用户名长度校验"）只生成1条代表性用例，
+               并在用例标题或预期结果中注明覆盖范围（如"覆盖3/20/21位边界"），禁止把每个等价类/每个边界值拆成多条用例。
+            2. 用例优先级（用于决定取舍）：
+               - P0：核心主流程、正向场景 —— 必须生成
+               - P1：常见异常场景、边界值 —— 建议生成
+               - P2：组合场景、极端边界、兼容性细节 —— 可选生成，数量不超过总数1/3
+               优先保证 P0/P1 的覆盖质量，P2 可被忽略或折叠。
+            3. 忽略以下内容，不为其生成用例：
+               - UI样式、布局、颜色、字体等前端展示细节
+               - 文案提示信息的具体内容（只关注功能逻辑，不校验具体文案措辞）
+               - 产品背景介绍、业务价值描述、架构设计等非功能性文字
+               - 文档中的字段说明（仅作为设计参考，不作为独立测试点）
+            """;
+
+    /** 用例总量预算（模块8：数量管控），可通过 application.yml 的 ai.case-budget 覆盖 */
+    private static int CASE_BUDGET = 120;
+    private static final int CASE_BUDGET_MIN = 100;
+    private static final int CASE_BUDGET_MAX = 150;
+
+    /** 状态默认值：自定义模板中【状态】列默认填写「待评审」 */
+    private static final String DEFAULT_STATUS = "待评审";
+    private static final Pattern DESIGN_METHOD_TITLE_PREFIX = Pattern.compile(
+            "^\\s*(?:【\\s*(?:等价类|边界值|判定表|场景法|错误推测法|测试设计方法)\\s*】\\s*)+");
+    private static final Pattern EXPECTED_RESULT_MARKER = Pattern.compile(
+            "^\\s*(?:[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\\d{1,2}\\s*[.．、)）:：])\\s*(?:/\\s*\\d{1,2}\\s*[.．、)）:：]\\s*)?");
+    private static final Pattern NUMBERED_TEXT_MARKER = Pattern.compile(
+            "(?<![\\dA-Za-z])(?:(?:第\\s*)?(\\d{1,2})\\s*[.．、)）:：](?:\\s*/\\s*(?:\\d{1,2})\\s*[.．、)）:：])?|([①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])(?:\\s*/\\s*\\d{1,2}\\s*[.．、)）:：]?)?)");
+
+    /** 清理模型可能添加的测试设计方法标签，标题只保留业务页面或测试目标。 */
+    static String normalizeRequirementTitle(String title) {
+        if (title == null) return "";
+        String normalized = title.trim();
+        while (true) {
+            Matcher matcher = DESIGN_METHOD_TITLE_PREFIX.matcher(normalized);
+            if (!matcher.find()) return normalized;
+            normalized = normalized.substring(matcher.end()).trim();
+        }
+    }
+
+    /**
+     * 将模型输出的步骤/预期条目重建为统一格式，避免出现“①/1.”这样的双重编号。
+     * 步骤统一使用阿拉伯数字，预期结果统一使用圆圈数字。
+     */
+    static String normalizeRequirementItems(String text, boolean expectedResult) {
+        if (text == null || text.trim().isEmpty()) return "";
+        String source = text.trim();
+        Matcher matcher = NUMBERED_TEXT_MARKER.matcher(source);
+        List<String> contents = new ArrayList<>();
+        List<Integer> numbers = new ArrayList<>();
+        List<Integer> starts = new ArrayList<>();
+        List<Integer> ends = new ArrayList<>();
+        while (matcher.find()) {
+            int number = matcher.group(1) != null
+                    ? Integer.parseInt(matcher.group(1))
+                    : matcher.group(2).codePointAt(0) - '①' + 1;
+            numbers.add(number);
+            starts.add(matcher.start());
+            ends.add(matcher.end());
+        }
+        if (numbers.isEmpty()) return source;
+        for (int i = 0; i < numbers.size(); i++) {
+            int contentStart = ends.get(i);
+            int contentEnd = i + 1 < numbers.size() ? starts.get(i + 1) : source.length();
+            contents.add(source.substring(contentStart, contentEnd).trim());
+        }
+
+        StringBuilder normalized = new StringBuilder();
+        for (int i = 0; i < contents.size(); i++) {
+            String content = contents.get(i);
+            // 去掉另一种编号及斜杠，兼容模型输出“①/1. 内容”或“1./① 内容”。
+            content = content.replaceFirst(
+                    "^\\s*(?:/\\s*)?(?:\\d{1,2}\\s*[.．、)）:：]|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])\\s*", "");
+            if (i > 0) normalized.append('\n');
+            if (expectedResult) {
+                int number = numbers.get(i);
+                normalized.append(toCircledNumber(number)).append(' ').append(content);
+            } else {
+                normalized.append(numbers.get(i)).append(". ").append(content);
+            }
+        }
+        return normalized.toString().trim();
+    }
+
+    private static String toCircledNumber(int number) {
+        return number >= 1 && number <= 20
+                ? String.valueOf((char) ('①' + number - 1))
+                : number + ".";
+    }
+
+
+    /** 真实状态取值（用于识别 AI 是否把优先级/环境等非状态内容填进了状态列） */
+    private static final Set<String> STATUS_VALUES = new HashSet<>(List.of(
+            "待评审", "待执行", "未执行", "执行中", "已执行",
+            "通过", "未通过", "已通过", "失败", "阻塞", "跳过", "已完成", "取消"));
+
+    /** 测试类型取值（用于识别类型列是否被 AI 填错） */
+    private static final Set<String> TYPE_VALUES = new HashSet<>(List.of(
+            "功能测试", "接口测试", "性能测试", "安全测试", "兼容性测试",
+            "UI测试", "自动化测试", "回归测试", "冒烟测试", "集成测试", "单元测试"));
+
+    /** 判断是否为优先级取值（P0/P1/P2/P3 或 高/中/低） */
+    private static boolean isPriorityValue(String v) {
+        if (v == null) return false;
+        String s = v.trim();
+        if (s.matches("(?i)P[0-4]")) return true;
+        return s.equals("高") || s.equals("中") || s.equals("低");
+    }
+
+    /** 判断是否为真实的状态取值 */
+    private static boolean isStatusValue(String v) {
+        return v != null && STATUS_VALUES.contains(v.trim());
+    }
+
+    /** 判断是否为测试类型取值 */
+    private static boolean isTypeValue(String v) {
+        return v != null && TYPE_VALUES.contains(v.trim());
+    }
+
+    /** 判断是否为 AI 回显的列头行（如 "标题|所属分组|创建人|..."），是则跳过该行 */
+    private static boolean isTemplateHeaderRow(String[] parts, com.example.demo.TestCaseTemplate template) {
+        if (parts == null || parts.length == 0) return false;
+        String first = safeGet(parts, 0);
+        if (first.isEmpty()) return false;
+        if (template != null) {
+            for (com.example.demo.TestCaseTemplate.TemplateField f : template.getFields()) {
+                if (first.equals(f.getDisplayName().trim())) return true;
+            }
+        }
+        // 常见列头兜底（兼容模板未覆盖的情况）
+        return first.equals("标题") || first.equals("用例标题")
+                || first.equals("测试大模块") || first.equals("测试模块")
+                || first.equals("用例编号") || first.equals("字段");
+    }
+
+    /**
+     * 自定义模板列内容修复：应对 AI 输出列错位
+     * - 状态(status)：非真实状态值一律纠正为「待评审」
+     * - 等级/优先级(priority)：列值不是优先级时，从整行找回 P0/P1/P2 填入
+     * - 类型(caseType)：非测试类型值或为空 → 默认「功能测试」
+     * - 自动化(isAutomated)：仅保留 是/否/部分，其余清空
+     */
+    private static void repairCustomTemplateRow(TestCase tc, com.example.demo.TestCaseTemplate template) {
+        if (template == null || tc == null) return;
+        // 1) 从整行找回优先级值（AI 可能把 P0/P1/P2 填到任意列，如"状态"列）
+        String priorityValue = null;
+        for (com.example.demo.TestCaseTemplate.TemplateField f : template.getFields()) {
+            String v = tc.getField(f.getFieldName());
+            if (v != null && isPriorityValue(v)) { priorityValue = v; break; }
+        }
+        // 2) 逐字段修复
+        for (com.example.demo.TestCaseTemplate.TemplateField f : template.getFields()) {
+            String name = f.getFieldName();
+            String val = tc.getField(name);
+            if ("status".equals(name)) {
+                // 状态是系统评审字段，不采用模型生成的执行状态
+                tc.setField(name, DEFAULT_STATUS);
+            } else if ("priority".equals(name)) {
+                if (priorityValue != null && !isPriorityValue(val)) tc.setField(name, priorityValue);
+            } else if ("caseType".equals(name)) {
+                if (val == null || !isTypeValue(val)) tc.setField(name, "功能测试");
+            } else if ("isAutomated".equals(name)) {
+                String sv = val == null ? "" : val.trim();
+                if (!sv.isEmpty() && !sv.equals("是") && !sv.equals("否") && !sv.equals("部分")) {
+                    tc.setField(name, "");
+                }
+            } else if ("expectedStatusCode".equals(name)) {
+                // 数字字段规范化：非纯数字（如 "返回200+{...}"）提取数字，避免后续 parseInt 崩溃
+                if (val != null && !val.trim().isEmpty() && !val.trim().matches("\\d+")) {
+                    Integer code = TestCase.extractStatusCode(val);
+                    tc.setField(name, code != null ? code.toString() : "");
+                }
+            } else if ("expectedBusinessCode".equals(name)) {
+                if (val != null && !val.trim().isEmpty() && !val.trim().matches("\\d+")) {
+                    Integer code = TestCase.extractInteger(val);
+                    tc.setField(name, code != null ? code.toString() : "");
+                }
+            }
+        }
+    }
 
     /** Controller 调用前设置，生成后自动清空 */
     public static void setCustomTemplate(String t) {
@@ -75,6 +273,18 @@ public class AiService {
     public static void resetCounter() {
         globalModuleCounter.clear();
         globalSequenceCounter = 1;
+        apiCaseCap = 0; // 新请求默认关闭接口用例数量上限，避免影响 /generate-text
+    }
+
+    /**
+     * 接口文档流程：裁剪整份文档用例总量（超出预算优先保留 P0/P1），供控制器调用
+     */
+    public static List<TestCase> enforceApiTotalBudget(List<TestCase> cases) {
+        if (cases == null || cases.size() <= API_TOTAL_BUDGET) return cases;
+        int before = cases.size();
+        List<TestCase> trimmed = trimLowPriority(cases, API_TOTAL_BUDGET);
+        log.info("接口用例总量 {} 条超过预算 {}，已裁剪保留 {} 条（优先 P0/P1）", before, API_TOTAL_BUDGET, trimmed.size());
+        return trimmed;
     }
 
     private static String promptExtractInterfaces;
@@ -142,6 +352,20 @@ public class AiService {
             if (!aiConfig.containsKey("prompts")) {
                 log.warn("ai 配置中未找到 'prompts' 节点，使用默认Prompts");
                 return;
+            }
+
+            if (aiConfig.containsKey("case-budget")) {
+                try {
+                    int budget = Integer.parseInt(String.valueOf(aiConfig.get("case-budget")));
+                    if (budget >= 50) {
+                        CASE_BUDGET = budget;
+                        log.info("从配置文件加载用例总量预算: {} 条", CASE_BUDGET);
+                    } else {
+                        log.warn("case-budget 配置过小({})，使用默认 {}", budget, CASE_BUDGET);
+                    }
+                } catch (Exception e) {
+                    log.warn("case-budget 配置无效，使用默认 {}", CASE_BUDGET);
+                }
             }
 
             Object promptsObj = aiConfig.get("prompts");
@@ -225,6 +449,10 @@ public class AiService {
             promptGenerateTestCases = """
                 你是一位资深测试工程师。请为以下接口设计【后端接口自动化用例】。
 
+                【事实边界】
+                1. 请求路径、方法、参数名和值、账号、URL、事件ID、业务码、响应字段和数据库事实只能来自接口文档；文档没有提供时不要猜测，不要使用本提示词中的示例作为实际数据。
+                2. 文档缺少具体值时，使用“文档未指定”或留空，不得写入虚构的可执行值。
+
                 红线规则：
                 1. 1个独立测试点 = 1条用例
                 2. **输出必须严格10个字段用|分隔**：测试模块|测试点|接口URL|请求方法|请求头|请求参数/请求体|前置条件|具体操作|预期结果(含状态码+响应体)|优先级
@@ -247,11 +475,8 @@ public class AiService {
                 - 预期结果：HTTP状态码 + 响应体关键字段
                 - 优先级：P0/P1/P2
 
-                输出示例（每行10个字段用|分隔）：
-                EMPLOYEE|功能验证|/admin/employee/login|POST|Content-Type: application/json|{"username":"admin","password":"123456"}|用户admin已注册|调用登录接口|200+{"code":0}|P0
-                EMPLOYEE|参数校验|/admin/employee/login|POST|Content-Type: application/json|{"username":"","password":"123456"}|无|username为空调用|400+{"code":400}|P0
-                EMPLOYEE|边界值|/admin/employee/login|POST|Content-Type: application/json|{"username":"a","password":"123456"}|存在1字符用户名|调用登录接口|200+{"code":0}|P1
-                EMPLOYEE|异常场景|/admin/employee/logout|POST|Authorization: Bearer xxx|无|已登录获取token|调用登出接口|200+{"code":0}|P0
+                输出示例（仅说明字段结构，禁止将示例中的值复制到实际用例）：
+                [测试模块]|[测试点]|[接口URL]|[请求方法]|[请求头]|[请求参数/请求体]|[前置条件]|[具体操作]|[预期结果]|[优先级]
 
                 接口文档：
                 {INTERFACE_DOC}
@@ -262,7 +487,12 @@ public class AiService {
             log.info("使用默认 generate-testcases-from-requirement Prompt");
             promptGenerateTestCasesFromRequirement = """
                 你是一位资深测试工程师。请根据以下需求文档，生成【UI业务功能用例】。
-                
+
+                【事实边界与步骤对应规则】
+                1. 只能使用需求文档中明确出现或能够直接概括的页面、操作、字段、状态和埋点信息；不得引用提示词示例、常识或其他文档中的账号、URL、事件ID、参数名、参数值、错误码、时间阈值、数量和固定文案。
+                2. 原文没有具体值时，不要猜测，也不要添加“待补充”“参数待确认”等伪字段；在已有字段中写“文档未指定”或“由测试环境提供”，也可以留空。
+                3. 测试步骤必须使用连续编号（1.、2.、3.）；预期结果必须使用相同编号，第N条预期只验证第N步动作产生的结果，禁止将多个步骤合并到一个预期编号。
+
                 ⚠️ 红线规则（必须严格遵守）：
                 1. 这是需求文档的功能描述，不是API接口文档，不要生成接口测试用例
                 2. 1个独立测试点 = 1条用例，一条用例只能验证单一目标，禁止多业务流程合并
@@ -282,14 +512,10 @@ public class AiService {
                 6. 权限校验：越权访问、无权限操作、角色权限边界
                 
                 字段填写规范：
-                - 测试大模块：顶层业务域（如"系统管理"、"业务功能"、"数据管理"）
-                - 子模块：具体功能模块（如"用户管理"、"订单管理"、"商品管理"）
-                - 测试点分类：必须从枚举值中选择（正向/参数校验/边界/异常/UI校验/权限校验）
-                - 用例标题：清晰描述单一验证目标，含场景关键词
-                - 前置条件：必须包含系统状态（如"系统已登录"）、页面路径，禁止只写"系统已部署"
-                - 预置测试数据：必须包含具体账号（如"管理员账号admin/123456"）、预置数据（如"已存在用户test001"），禁止空白
-                - 操作步骤：必须包含完整页面路径（菜单入口/URL），每步以数字开头，步骤清晰可复现
-                - 量化预期结果：必须包含明确判定标准（如"页面展示≥10条数据"、"状态变为'已支付'"），禁止模糊文字
+                - 测试大模块和子模块只能根据需求文档填写
+                - 前置条件、预置测试数据、环境和版本如果原文未提供，填写“文档未指定”或留空
+                - 操作步骤必须包含连续数字编号；量化预期结果必须使用对应编号逐步描述
+                - 不能使用任何示例中的账号、URL、订单号或其他具体值
                 
                 优先级评估标准：
                 - P0：核心业务流程、主功能验证、严重安全漏洞、导致系统崩溃的场景、认证授权失败
@@ -298,12 +524,7 @@ public class AiService {
                 
                 输出格式（每个用例一行，字段用|分隔，不要输出用例编号！编号由系统自动生成）：
                 测试大模块|子模块|测试点分类|用例标题|前置条件|预置测试数据|操作步骤|量化预期结果|优先级|测试环境|版本|实际结果|缺陷单号|测试日期
-                
-                输出示例（正确格式）：
-                系统管理|用户管理|正向|管理员登录成功|测试环境已启动，浏览器已打开|管理员账号admin/123456已注册|1.访问http://test.example.com/login 2.输入用户名admin 3.输入密码123456 4.点击"登录"按钮|成功跳转到系统首页，右上角显示"admin"|P0|测试环境|V1.0.0|||
-                系统管理|用户管理|参数校验|用户名为空登录失败|测试环境已启动，登录页面已打开|无|1.用户名输入框留空 2.密码输入123456 3.点击"登录"按钮|提示"用户名不能为空"|P0|测试环境|V1.0.0|||
-                系统管理|用户管理|UI校验|登录页面刷新后数据不消失|测试环境已启动，登录页面已打开|无|1.在用户名输入框输入test 2.按F5刷新页面|用户名输入框保留"test"|P1|测试环境|V1.0.0|||
-                系统管理|用户管理|权限校验|普通用户访问管理员页面被拒绝|测试环境已启动，普通用户已登录|普通用户user001账号|1.在地址栏输入http://test.example.com/admin 2.按回车|跳转到403禁止访问页面|P0|测试环境|V1.0.0|||
+                只输出符合格式的用例行，不要输出解释或示例。
 
                 需求文档：
                 {REQUIREMENT_DOC}
@@ -365,13 +586,41 @@ public class AiService {
         return resolvedValue;
     }
 
+    /** 启动时打印各提供商 API Key 是否已配置（只显示是否配置，不输出 Key 内容） */
+    private static void logApiKeyConfigStatus() {
+        String[][] providers = {
+                {"DeepSeek", "DEEPSEEK_API_KEY"},
+                {"通义千问", "DASHSCOPE_API_KEY"},
+                {"豆包", "DOUBAO_API_KEY"},
+                {"豆包(别名)", "ARK_API_KEY"},
+                {"智谱GLM", "GLM_API_KEY"},
+                {"OpenAI", "OPENAI_API_KEY"},
+                {"通用兜底", "AI_API_KEY"}
+        };
+        StringBuilder sb = new StringBuilder("【API Key 配置状态】 ");
+        for (String[] p : providers) {
+            String v = readEnvVar(p[1]);
+            sb.append(p[0]).append("[").append(p[1]).append("]=")
+              .append(v != null ? "✅已配置" : "❌未配置").append(" | ");
+        }
+        log.info(sb.toString());
+    }
+
     public static void initModel() {
         if (model != null) {
             return;
         }
-        
-        String apiKey = getApiKey();
+        logApiKeyConfigStatus();
+
         String modelProvider = getModelProvider();
+        // 按提供商读取对应环境变量 Key（如 DEEPSEEK_API_KEY）；未配置时兜底全局 Key
+        String apiKey = resolveProviderApiKey(modelProvider);
+        if (apiKey == null || apiKey.isEmpty()) {
+            String expectedEnv = providerApiKeyEnvName(modelProvider);
+            apiKey = getApiKey();
+            log.warn("未找到默认提供商 {} 的 Key 环境变量{}，回退使用全局 API_KEY（可能与模型不匹配，建议配置后重启）",
+                    modelProvider, expectedEnv != null ? " " + expectedEnv : "");
+        }
 
         if (apiKey == null || apiKey.isEmpty()) {
             log.warn("⚠️ API Key未配置，AI功能将不可用");
@@ -431,17 +680,63 @@ public class AiService {
     public static String getCurrentModelName() { return currentModelName; }
 
     /**
+     * 模型名/提供商 → API Key 环境变量名
+     * deepseek→DEEPSEEK_API_KEY，qwen→DASHSCOPE_API_KEY，doubao→DOUBAO_API_KEY，
+     * glm→GLM_API_KEY，openai/gpt→OPENAI_API_KEY，未匹配返回 null
+     */
+    private static String providerApiKeyEnvName(String modelName) {
+        if (modelName == null) return null;
+        String lower = modelName.toLowerCase();
+        if (lower.contains("deepseek")) return "DEEPSEEK_API_KEY";
+        if (lower.contains("qwen")) return "DASHSCOPE_API_KEY";
+        if (lower.contains("doubao") || lower.contains("豆包")) return "DOUBAO_API_KEY";
+        if (lower.contains("glm")) return "GLM_API_KEY";
+        if (lower.contains("openai") || lower.contains("gpt")) return "OPENAI_API_KEY";
+        return null;
+    }
+
+    /** 读取环境变量/系统属性，多个候选名取第一个非空值 */
+    private static String readEnvVar(String... names) {
+        for (String name : names) {
+            String v = System.getProperty(name);
+            if (v == null || v.isEmpty()) v = System.getenv(name);
+            if (v != null && !v.isEmpty()) return v;
+        }
+        return null;
+    }
+
+    /**
+     * 按模型名/提供商解析对应的 API Key 环境变量
+     * 豆包支持 DOUBAO_API_KEY / ARK_API_KEY 两个别名；未匹配或未配置返回 null
+     */
+    private static String resolveProviderApiKey(String modelName) {
+        if (modelName == null) return null;
+        String lower = modelName.toLowerCase();
+        if (lower.contains("doubao") || lower.contains("豆包")) {
+            return readEnvVar("DOUBAO_API_KEY", "ARK_API_KEY");
+        }
+        String envName = providerApiKeyEnvName(modelName);
+        if (envName == null) return null;
+        return readEnvVar(envName);
+    }
+
+    /**
      * 切换模型（模块5：多模型切换）
      * 支持 deepseek-chat / qwen-vl-max / doubao-vision / gpt-4o / glm-4v 等
      */
     public static synchronized boolean switchModel(String modelName, String apiKey) {
         if (modelName == null || modelName.trim().isEmpty()) return false;
-        String key = (apiKey != null && !apiKey.trim().isEmpty()) ? apiKey.trim() : API_KEY;
+        String name = modelName.trim();
+        log.info("收到模型切换请求: model={}, 显式apiKey={}", name,
+                (apiKey != null && !apiKey.isEmpty()) ? "已传" : "未传");
+        // 显式传入的 Key 优先；其次按提供商自动读取对应环境变量 Key；最后兜底全局 API_KEY
+        String key = (apiKey != null && !apiKey.trim().isEmpty()) ? apiKey.trim()
+                : resolveProviderApiKey(name);
+        if (key == null || key.isEmpty()) key = API_KEY;
         if (key == null || key.isEmpty()) {
-            log.warn("切换模型失败：未提供API Key");
+            log.warn("切换模型失败：未提供API Key（{}）", name);
             return false;
         }
-        String name = modelName.trim();
         String lower = name.toLowerCase();
         try {
             if (lower.contains("deepseek")) {
@@ -462,7 +757,8 @@ public class AiService {
                 model = OpenAiChatModel.builder().apiKey(key).modelName(name).build();
             }
             currentModelName = name;
-            log.info("✅ 已切换模型: {}", name);
+            String keyEnv = providerApiKeyEnvName(name);
+            log.info("✅ 已切换模型: {}（Key来源: {}，key: {}）", name, keyEnv != null ? keyEnv : "全局API_KEY", maskApiKey(key));
             return true;
         } catch (Exception e) {
             log.error("切换模型失败: {}", e.getMessage());
@@ -474,6 +770,7 @@ public class AiService {
      * 带重试的模型调用（API失败自动重试3次，间隔2秒）
      */
     public static String generateWithRetry(String prompt) {
+        log.info("调用模型 {} 生成测试用例", currentModelName);
         Exception lastErr = null;
         for (int attempt = 1; attempt <= 3; attempt++) {
             try {
@@ -501,7 +798,7 @@ public class AiService {
             return API_KEY;
         }
 
-        String[] envNames = {"DASHSCOPE_API_KEY", "DEEPSEEK_API_KEY", "AI_API_KEY"};
+        String[] envNames = {"DASHSCOPE_API_KEY", "DEEPSEEK_API_KEY", "DOUBAO_API_KEY", "ARK_API_KEY", "GLM_API_KEY", "OPENAI_API_KEY", "AI_API_KEY"};
         for (String envName : envNames) {
             String value = System.getProperty(envName);
             if (value == null || value.isEmpty()) {
@@ -515,14 +812,14 @@ public class AiService {
         }
 
         API_KEY = "";
-        log.warn("⚠️ API Key未找到！请配置环境变量：DASHSCOPE_API_KEY / DEEPSEEK_API_KEY / AI_API_KEY");
+        log.warn("⚠️ API Key未找到！请配置环境变量：DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / DOUBAO_API_KEY / GLM_API_KEY / OPENAI_API_KEY / AI_API_KEY");
         return API_KEY;
     }
 
     private static void ensureModelReady() {
         if (getModel() == null) {
             throw new AIServiceException("AI_MODEL_NOT_INITIALIZED",
-                    "AI模型未初始化，请配置 DASHSCOPE_API_KEY / DEEPSEEK_API_KEY / AI_API_KEY 环境变量");
+                    "AI模型未初始化，请配置 DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / DOUBAO_API_KEY / GLM_API_KEY / OPENAI_API_KEY / AI_API_KEY 环境变量");
         }
     }
 
@@ -575,12 +872,8 @@ public class AiService {
             }
         }
 
-        List<String> uniqueInterfaces = new ArrayList<>();
-        for (String api : allInterfaces) {
-            if (!uniqueInterfaces.stream().anyMatch(api::contains)) {
-                uniqueInterfaces.add(api);
-            }
-        }
+        // 按「方法+规范化路径」去重：同一接口在文档多处出现（定义/调用顺序表/示例）只保留一次，并过滤 curl 命令行示例
+        List<String> uniqueInterfaces = PdfParser.dedupeInterfaces(allInterfaces);
 
         log.info("共提取到 {} 个唯一接口", uniqueInterfaces.size());
         return uniqueInterfaces;
@@ -672,8 +965,20 @@ public class AiService {
         }
         // 测试设计方法要求（模块2）
         prompt = prompt + DESIGN_METHOD_REQUIREMENT;
-        // 生成数量要求（模块7）
-        prompt = prompt + "\n请生成约 " + currentGenerateCount + " 条测试用例。";
+        // 用例生成约束（模块8：粒度/优先级/非功能性过滤）
+        prompt = prompt + GENERATION_CONSTRAINTS;
+        // 生成数量要求（模块7）：接口文档流程开启数量硬约束，避免一个接口爆出几十条用例
+        if (apiCaseCap > 0) {
+            prompt = prompt + "\n【数量硬约束】本接口只生成 " + apiCaseCap + " 条以内测试用例！"
+                    + "（1个测试点=1条，用等价类/边界值/场景法合并同类场景，覆盖核心流程即可："
+                    + "正向1-2条、参数校验2-3条、边界值1条、异常2-3条，同场景合并为1条代表性用例；"
+                    + "禁止拆分等价类、禁止重复冗余、禁止超过" + apiCaseCap + "条，宁少勿滥，优先保证 P0/P1 质量）";
+        } else {
+            prompt = prompt + "\n请生成约 " + currentGenerateCount + " 条测试用例，优先保证 P0/P1 质量。";
+        }
+        if (currentTemplate == null) {
+            prompt = prompt + "\n每行必须输出全部23列，某列无内容时留空占位（不要省略列、不要减少分隔符），禁止输出Markdown表格。";
+        }
         // Few-shot：注入人工修正过的优秀用例，提升生成质量
         String fewShot = FeedbackSystem.getFewShotExamples(5);
         if (!fewShot.isEmpty()) {
@@ -745,7 +1050,8 @@ public class AiService {
                     }
                     // 判定AI输出格式：列数接近模板(±2)视为自定义格式，否则视为默认格式
                     int tplCols = currentTemplate != null ? currentTemplate.getFields().size() : 23;
-                    int minCols = currentTemplate != null ? Math.min(tplCols, 23) : 23;
+                    // 默认API布局从左对齐，列数放宽到8：AI输出列不全时也能解析，缺失字段由 repairApiCase 兜底
+                    int minCols = currentTemplate != null ? Math.min(tplCols, 23) : 8;
                     boolean isCustomFormat = currentTemplate != null && parts.length <= tplCols + 2;
                     if (parts.length >= minCols) {
                         TestCase tc = new TestCase();
@@ -759,6 +1065,8 @@ public class AiService {
                             // 兜底标准字段
                             tc.setField("testModule", safeGet(parts, 1));
                             tc.setField("title", safeGet(parts, 0));
+                            // 列内容修复：状态默认"待评审"、等级取优先级、类型/自动化兜底
+                            repairCustomTemplateRow(tc, currentTemplate);
                         } else {
                             // 默认24列API映射
                             tc.setField("testModule", safeGet(parts, 0));
@@ -773,8 +1081,9 @@ public class AiService {
                             tc.setField("assertionRules", safeGet(parts, 11));
                             tc.setField("dbValidation", safeGet(parts, 12));
                             tc.setField("priority", priority(safeGet(parts, 13)));
-                            tc.setField("testEnvironment", safeGet(parts, 14));
-                            tc.setField("version", safeGet(parts, 15));
+                            // 测试环境/版本默认不填（接口用例由使用者统一填写）
+                            tc.setField("testEnvironment", "");
+                            tc.setField("version", "");
                             tc.setField("tester", safeGet(parts, 16));
                             tc.setField("defectId", safeGet(parts, 17));
                             tc.setField("testDate", safeGet(parts, 18));
@@ -787,6 +1096,8 @@ public class AiService {
                             if (!sc.isEmpty() && sc.matches("\\d+")) tc.setField("expectedStatusCode", sc);
                             String bc = safeGet(parts, 9);
                             if (!bc.isEmpty() && bc.matches("\\d+")) tc.setField("expectedBusinessCode", bc);
+                            // 字段兜底：方法/路径/模块缺失时自动补齐
+                            repairApiCase(tc);
                         }
 
                         // 空模块/空标题行跳过
@@ -801,13 +1112,10 @@ public class AiService {
                             tc.setField("interfacePath", title);
                             tc.setField("title", path);
                         }
-                        // 生成编号
+                        // 生成编号：测试模块首字母 + 序号（模块切换重新计数），如 EMPLOYEE → E-001
                         String moduleForId = (tc.getField("testModule") != null && !tc.getField("testModule").isEmpty())
                                 ? tc.getField("testModule") : "API";
-                        String modulePrefix = getApiModulePrefix(moduleForId, tc.getField("interfacePath"));
-                        int count = globalModuleCounter.getOrDefault(modulePrefix, 0) + 1;
-                        globalModuleCounter.put(modulePrefix, count);
-                        tc.setId(modulePrefix + "-" + String.format("%04d", count));
+                        tc.setId(generateApiCaseId(moduleForId));
                         tc.setTestCaseType("API");
 
                         testCases.add(tc);
@@ -829,6 +1137,13 @@ public class AiService {
             log.error("API调用失败: {}", e.getMessage(), e);
         }
 
+        // 接口文档流程：数量硬上限，超出的优先保留 P0/P1 裁剪（等价类/边界值已合并，宁少勿滥）
+        if (apiCaseCap > 0 && testCases.size() > apiCaseCap) {
+            int before = testCases.size();
+            testCases = trimLowPriority(testCases, apiCaseCap);
+            log.info("接口用例生成 {} 条超过上限 {}，已裁剪保留 {} 条（优先 P0/P1）", before, apiCaseCap, testCases.size());
+        }
+
         return testCases;
     }
 
@@ -840,6 +1155,10 @@ public class AiService {
         ensureModelReady();
 
         String prompt = promptGenerateTestCasesFromRequirement.replace("{REQUIREMENT_DOC}", requirementDoc);
+        // 测试设计方法 + 生成约束 + 总量控制（模块8）
+        prompt = prompt + DESIGN_METHOD_REQUIREMENT + GENERATION_CONSTRAINTS;
+        prompt = prompt + "\n【数量控制】总条数控制在 " + CASE_BUDGET_MIN + "-" + CASE_BUDGET_MAX
+                + " 条之间；覆盖范围较大时优先覆盖核心功能，次要功能适度抽样，禁止为凑数拆分用例。";
 
         try {
             String result = generateWithRetry(prompt);
@@ -891,8 +1210,8 @@ public class AiService {
                         tc.setField("steps", steps);
                         tc.setField("expectedResult", expectedResult);
                         tc.setField("priority", priority.isEmpty() ? "P1" : priority);
-                        tc.setField("testEnvironment", testEnvironment.isEmpty() ? "测试环境" : testEnvironment);
-                        tc.setField("version", version.isEmpty() ? "V1.0.0" : version);
+                        tc.setField("testEnvironment", testEnvironment);
+                        tc.setField("version", version);
                         tc.setField("actualResult", actualResult);
                         tc.setField("defectId", defectId);
                         tc.setField("testDate", testDate);
@@ -918,6 +1237,13 @@ public class AiService {
 
         } catch (Exception e) {
             log.error("API调用失败: {}", e.getMessage(), e);
+        }
+
+        // 接口文档流程：数量硬上限，超出的优先保留 P0/P1 裁剪（等价类/边界值已合并，宁少勿滥）
+        if (apiCaseCap > 0 && testCases.size() > apiCaseCap) {
+            int before = testCases.size();
+            testCases = trimLowPriority(testCases, apiCaseCap);
+            log.info("接口用例生成 {} 条超过上限 {}，已裁剪保留 {} 条（优先 P0/P1）", before, apiCaseCap, testCases.size());
         }
 
         return testCases;
@@ -1037,6 +1363,29 @@ public class AiService {
     }
 
     /**
+     * 生成接口用例编号：取测试模块首字母 + 序号（模块切换重新计数），如 EMPLOYEE → E-001
+     * 计数器按完整模块名隔离：模块不同则序号从 001 重新开始
+     */
+    private static String generateApiCaseId(String testModule) {
+        String module = (testModule == null || testModule.trim().isEmpty()) ? "API" : testModule.trim();
+        String moduleKey = module.toUpperCase();
+        char prefix = 'U';
+        char first = moduleKey.isEmpty() ? 'U' : moduleKey.charAt(0);
+        if (first >= 'A' && first <= 'Z') {
+            prefix = first;
+        } else {
+            // 中文等非英文模块：回退到模块代码首字母（如 员工管理→EMP→E），避免用中文字符作前缀
+            String code = getModuleCode(module);
+            if (code != null && !code.isEmpty() && code.charAt(0) >= 'A' && code.charAt(0) <= 'Z') {
+                prefix = code.charAt(0);
+            }
+        }
+        int count = globalModuleCounter.getOrDefault(moduleKey, 0) + 1;
+        globalModuleCounter.put(moduleKey, count);
+        return prefix + "-" + String.format("%03d", count);
+    }
+
+    /**
      * 判断是否是数字
      */
     private static boolean isNumeric(String str) {
@@ -1104,7 +1453,6 @@ public class AiService {
         List<TestCase> testCases = new ArrayList<>();
         String[] lines = result.split("\n");
         int caseIndex = 1;
-        Map<String, Integer> moduleCounter = new HashMap<>();
 
         for (String line : lines) {
             line = line.trim();
@@ -1114,8 +1462,9 @@ public class AiService {
 
             TestCase tc = new TestCase();
             tc.setTestCaseType("API");
-            tc.setField("testEnvironment", "测试环境");
-            tc.setField("version", "V1.0.0");
+            // 测试环境/版本默认不填
+            tc.setField("testEnvironment", "");
+            tc.setField("version", "");
             tc.setField("priority", "中");
 
             String[] parts = null;
@@ -1127,61 +1476,47 @@ public class AiService {
 
             // 自定义模板：按位置映射到模板字段key
             if (parts != null && currentTemplate != null && parts.length >= currentTemplate.getFields().size()) {
+                // 跳过 AI 回显的列头垃圾行（如 "标题|所属分组|创建人|..."）
+                if (isTemplateHeaderRow(parts, currentTemplate)) continue;
                 for (int i = 0; i < currentTemplate.getFields().size() && i < parts.length; i++) {
                     String key = currentTemplate.getFields().get(i).getFieldName();
                     tc.setField(key, safeGet(parts, i));
                 }
-                // 默认值兜底
-                if (tc.getField("caseType") == null || tc.getField("caseType").isEmpty()) tc.setField("caseType", "功能测试");
-                if (tc.getField("isAutomated") == null || tc.getField("isAutomated").isEmpty()) tc.setField("isAutomated", "");
-            } else if (parts != null && parts.length >= 10) {
+                // 列内容修复：状态默认"待评审"、等级取优先级、类型/自动化兜底
+                repairCustomTemplateRow(tc, currentTemplate);
+            } else if (parts != null && parts.length >= 5) {
+                // 从左对齐标准API布局，兼容 AI 输出部分列（缺失字段由 repairApiCase 兜底）
                 tc.setField("testModule", safeGet(parts, 0));
                 tc.setField("testPoint", safeGet(parts, 1));
                 tc.setField("title", safeGet(parts, 2));
-                tc.setField("interfacePath", safeGet(parts, 3));
-                tc.setField("method", safeGet(parts, 4));
-                tc.setField("precondition", safeGet(parts, 5));
-                tc.setField("steps", safeGet(parts, 6));
+                tc.setField("precondition", safeGet(parts, 3));
+                tc.setField("interfacePath", safeGet(parts, 4));
+                tc.setField("method", safeGet(parts, 5));
+                tc.setField("completeHeaders", safeGet(parts, 6));
                 tc.setField("params", safeGet(parts, 7));
                 if (isNumeric(safeGet(parts, 8))) {
                     tc.setField("expectedStatusCode", safeGet(parts, 8));
                 }
-                if (!safeGet(parts, 9).isEmpty() && isNumeric(safeGet(parts, 9))) {
+                if (parts.length > 9 && !safeGet(parts, 9).isEmpty() && isNumeric(safeGet(parts, 9))) {
                     tc.setField("expectedBusinessCode", safeGet(parts, 9));
                 }
-                if (parts.length > 10) {
-                    tc.setField("expectedResult", safeGet(parts, 10));
-                }
+                if (parts.length > 10) tc.setField("expectedResponseJson", safeGet(parts, 10));
+                if (parts.length > 11) tc.setField("assertionRules", safeGet(parts, 11));
+                if (parts.length > 12) tc.setField("dbValidation", safeGet(parts, 12));
+                if (parts.length > 13) tc.setField("priority", safeGet(parts, 13));
+
+                repairApiCase(tc);
 
                 String module = tc.getField("testModule") != null && !tc.getField("testModule").isEmpty() ? tc.getField("testModule") : "API";
-                int cnt = moduleCounter.getOrDefault(module, 0) + 1;
-                moduleCounter.put(module, cnt);
-                tc.setId(module + "-" + String.format("%04d", cnt));
+                // 编号：测试模块首字母 + 序号（模块切换重新计数），如 EMPLOYEE → E-001
+                tc.setId(generateApiCaseId(module));
                 tc.setField("testModuleCode", getModuleCode(module));
-            } else if (parts != null && parts.length >= 5) {
-                tc.setField("title", safeGet(parts, 1));
-                if (parts.length >= 3) tc.setField("interfacePath", safeGet(parts, 2));
-                if (parts.length >= 4) tc.setField("method", safeGet(parts, 3));
-                if (parts.length >= 5) tc.setField("params", safeGet(parts, 4));
-                if (parts.length >= 6) {
-                    String statusCode = safeGet(parts, 5);
-                    if (isNumeric(statusCode)) tc.setField("expectedStatusCode", statusCode);
-                }
-                if (parts.length >= 7) {
-                    String businessCode = safeGet(parts, 6);
-                    if (!businessCode.isEmpty() && isNumeric(businessCode)) tc.setField("expectedBusinessCode", businessCode);
-                }
-                if (parts.length >= 8) tc.setField("expectedResult", safeGet(parts, 7));
-                else if (parts.length >= 5) tc.setField("expectedResult", safeGet(parts, 5));
-
-                tc.setId("TC-F" + String.format("%04d", caseIndex++));
-                tc.setField("testModule", "功能");
-                tc.setField("interfacePath", "/api/unknown");
             } else {
-                if (line.length() > 15 || !line.contains("/")) continue;
-                tc.setField("title", line);
-                tc.setField("method", "POST");
-                tc.setField("interfacePath", "/api/unknown");
+                // 无管道分隔的行：看起来像接口行（含HTTP方法或 /路径）才兜底，否则跳过
+                if (!line.matches("(?i).*\\b(GET|POST|PUT|DELETE|PATCH)\\b.*") && !line.startsWith("/")) continue;
+                tc.setField("title", line.length() > 50 ? line.substring(0, 50) : line);
+                tc.setField("interfacePath", line);
+                repairApiCase(tc);
                 tc.setId("TC-F" + String.format("%04d", caseIndex++));
             }
 
@@ -1192,6 +1527,104 @@ public class AiService {
     }
 
     /**
+     * API用例字段兜底修复：方法/接口路径/测试模块缺失时自动补齐，
+     * 保证脚本生成所需的关键字段（method/interfacePath/params）始终可用。
+     */
+    private static void repairApiCase(TestCase tc) {
+        if (tc == null) return;
+
+        // 1) 方法兜底：缺失时从各字段中识别方法关键字，否则默认 POST
+        String method = tc.getField("method");
+        if (method == null || method.trim().isEmpty()) {
+            String m = findMethodInFields(tc);
+            tc.setField("method", m != null ? m : "POST");
+        } else {
+            tc.setField("method", method.trim().toUpperCase());
+        }
+
+        // 2) 接口路径兜底：为空或不像路径时，从字段中提取以 / 开头的路径
+        String path = tc.getField("interfacePath");
+        String cleaned = path != null ? cleanPath(path) : null;
+        if (cleaned == null) {
+            cleaned = extractPathFromFields(tc);
+        }
+        tc.setField("interfacePath", cleaned != null ? cleaned : "/api/unknown");
+
+        // 3) 列错位修复：AI 省略"请求头"列时，参数 JSON 被放到 completeHeaders、状态码被当成 params
+        String params = tc.getField("params");
+        String status = tc.getField("expectedStatusCode");
+        String headers = tc.getField("completeHeaders");
+        if (params != null && !params.trim().isEmpty() && params.trim().matches("\\d+")
+                && (status == null || status.trim().isEmpty())) {
+            // params 是纯数字 → 是状态码，交换
+            tc.setField("expectedStatusCode", params.trim());
+            tc.setField("params", "");
+        }
+        if (headers != null && headers.trim().startsWith("{") && (tc.getField("params") == null || tc.getField("params").isEmpty())) {
+            // completeHeaders 看起来是 JSON 参数体 → 挪到 params
+            tc.setField("params", headers);
+            tc.setField("completeHeaders", "");
+        }
+
+        // 4) 测试模块兜底
+        if (tc.getField("testModule") == null || tc.getField("testModule").trim().isEmpty()) {
+            tc.setField("testModule", "API");
+        }
+    }
+
+    /**
+     * 从用例各字段中识别 HTTP 方法关键字
+     */
+    private static String findMethodInFields(TestCase tc) {
+        String[] keys = {"interfacePath", "title", "steps", "params", "precondition"};
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile("\\b(GET|POST|PUT|DELETE|PATCH)\\b", java.util.regex.Pattern.CASE_INSENSITIVE);
+        for (String key : keys) {
+            String v = tc.getField(key);
+            if (v == null) continue;
+            java.util.regex.Matcher m = p.matcher(v);
+            if (m.find()) return m.group(1).toUpperCase();
+        }
+        return null;
+    }
+
+    /**
+     * 从用例各字段中提取以 / 开头的接口路径（兼容 "POST /api/login"、"http://host/api" 等写法）
+     */
+    private static String extractPathFromFields(TestCase tc) {
+        String[] keys = {"interfacePath", "params", "title", "steps", "precondition"};
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile("(?:https?://[^/\\s]+)?(/[\\w\\-{}.:$/?=&]+)");
+        for (String key : keys) {
+            String v = tc.getField(key);
+            if (v == null) continue;
+            java.util.regex.Matcher m = p.matcher(v);
+            while (m.find()) {
+                String path = m.group(1);
+                if (path.length() > 1 && !path.equals("/")) return path;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 规范化路径：剥离前导 HTTP 方法/装饰字符、截断到第一个空白、去尾部标点
+     */
+    private static String cleanPath(String path) {
+        if (path == null) return null;
+        String p = path.trim();
+        if (p.isEmpty()) return null;
+        // 剥离前导 HTTP 方法（如 "POST /api/login"）
+        p = p.replaceFirst("^(?i)(GET|POST|PUT|DELETE|PATCH)\\s+", "");
+        // 剥离前导引号/反引号/括号/星号等装饰
+        p = p.replaceFirst("^[`\"'()<>\\[\\]*\\s]+", "");
+        // 取第一个空白前的内容
+        int sp = p.indexOf(' ');
+        if (sp > 0) p = p.substring(0, sp);
+        // 去掉尾部常见标点
+        p = p.replaceAll("[,;.，。;]$", "");
+        return (p.startsWith("/") || p.startsWith("http")) ? p : null;
+    }
+
+    /**
      * 根据需求文档按章节分段生成测试用例
      * @param sections 章节列表（包含标题和内容）
      * @return 测试用例列表
@@ -1199,6 +1632,15 @@ public class AiService {
     public static List<TestCase> generateTestCasesFromRequirementBySections(List<WordParser.SectionContent> sections) {
         List<TestCase> allTestCases = new ArrayList<>();
         ensureModelReady();
+
+        if (sections == null || sections.isEmpty()) {
+            log.warn("需求章节为空，跳过生成");
+            return allTestCases;
+        }
+        String requirementEvidence = sections.stream()
+                .map(s -> (s.getTitle() == null ? "" : s.getTitle()) + "\n"
+                        + (s.getContent() == null ? "" : s.getContent()))
+                .reduce("", (left, right) -> left + "\n" + right);
 
         log.info("开始按章节生成测试用例，共 {} 个章节/段落", sections.size());
         int sectionIndex = 1;
@@ -1213,11 +1655,18 @@ public class AiService {
                     + "\n请严格遵守：每行输出这" + currentTemplate.getFields().size() + "个字段，不要输出多余内容！";
         }
 
+        // 用例总量控制（模块8）：整份文档预算 CASE_BUDGET，按剩余章节均摊，动态调整
+        int remainingBudget = CASE_BUDGET;
+        int remainingSections = Math.max(1, sections.size());
+
         for (WordParser.SectionContent section : sections) {
             log.info("处理章节 [{}/{}]: {}", sectionIndex, sections.size(), section.getTitle());
 
-            String sectionPrompt = buildRequirementSectionPrompt(section.getTitle(), section.getContent());
+            // 本节配额 = 剩余预算 / 剩余章节数（下限4条，避免过少）
+            int quota = Math.max(4, Math.round(remainingBudget / (float) remainingSections));
+            String sectionPrompt = buildRequirementSectionPrompt(section.getTitle(), section.getContent(), quota, remainingBudget);
             sectionPrompt = sectionPrompt + DESIGN_METHOD_REQUIREMENT;
+            sectionPrompt = sectionPrompt + GENERATION_CONSTRAINTS;
             if (!fewShot.isEmpty()) sectionPrompt = fewShot + "\n\n" + sectionPrompt;
             if (!customFormatNote.isEmpty()) sectionPrompt = sectionPrompt.replaceAll("(?m)^.*输出格式.*$", "")
                     .replaceAll("(?m)^.*\\d+列.*$", "") + customFormatNote;
@@ -1225,94 +1674,113 @@ public class AiService {
                 String result = generateWithRetry(sectionPrompt);
                 log.debug("章节 {} AI返回内容长度: {}", section.getTitle(), result != null ? result.length() : 0);
 
-                if (result == null || result.trim().isEmpty()) {
+                if (result != null && !result.trim().isEmpty()) {
+                    List<TestCase> sectionTestCases = parseRequirementTestCases(result, section.getTitle());
+                    List<TestCase> validSectionCases = validateRequirementCases(sectionTestCases, requirementEvidence);
+                    allTestCases.addAll(validSectionCases);
+                    remainingBudget = Math.max(0, remainingBudget - validSectionCases.size());
+                    log.info("章节 {} 生成 {} 条，质量校验通过 {} 条，过滤 {} 条，剩余预算 {} 条",
+                            section.getTitle(), sectionTestCases.size(), validSectionCases.size(),
+                            sectionTestCases.size() - validSectionCases.size(), remainingBudget);
+                } else {
                     log.warn("章节 {} AI返回空响应，跳过", section.getTitle());
-                    sectionIndex++;
-                    continue;
                 }
-
-                List<TestCase> sectionTestCases = parseRequirementTestCases(result, section.getTitle());
-                allTestCases.addAll(sectionTestCases);
-                
-                log.info("章节 {} 生成了 {} 条测试用例", section.getTitle(), sectionTestCases.size());
-
             } catch (Exception e) {
                 log.error("处理章节 {} 失败: {}", section.getTitle(), e.getMessage());
             }
 
+            remainingSections = Math.max(1, remainingSections - 1);
             sectionIndex++;
+        }
+
+        // 若总量仍超预算，裁剪低优先级(P2)用例，保留 P0/P1（模块8：P2 可折叠忽略）
+        if (allTestCases.size() > CASE_BUDGET) {
+            int before = allTestCases.size();
+            allTestCases = trimLowPriority(allTestCases, CASE_BUDGET);
+            log.info("用例总量 {} 条超过预算 {} 条，已裁剪低优先级用例，保留 {} 条", before, CASE_BUDGET, allTestCases.size());
         }
 
         log.info("所有章节处理完成，共生成 {} 条测试用例", allTestCases.size());
         return allTestCases;
     }
 
+    private static List<TestCase> validateRequirementCases(List<TestCase> candidates, String requirementText) {
+        if (candidates == null || candidates.isEmpty()) return new ArrayList<>();
+        List<TestCase> valid = new ArrayList<>();
+        int filtered = 0;
+        for (TestCase tc : candidates) {
+            TestCaseQualityValidator.ValidationResult result =
+                    TestCaseQualityValidator.validateUiRequirement(tc, requirementText);
+            if (result.isValid()) {
+                valid.add(tc);
+            } else {
+                filtered++;
+                String codes = result.getIssues().stream()
+                        .map(TestCaseQualityValidator.ValidationIssue::getCode)
+                        .distinct()
+                        .reduce((a, b) -> a + "," + b)
+                        .orElse("UNKNOWN");
+                log.warn("过滤需求用例 [{}]，质量问题: {}", tc != null ? tc.getField("title") : "空用例", codes);
+            }
+        }
+        if (filtered > 0) {
+            log.info("需求用例质量校验完成：通过 {} 条，过滤 {} 条", valid.size(), filtered);
+        }
+        return valid;
+    }
+
     /**
      * 构建章节测试用例生成的Prompt（UI业务功能用例）
      */
-    private static String buildRequirementSectionPrompt(String sectionTitle, String sectionContent) {
+    private static String buildRequirementSectionPrompt(String sectionTitle, String sectionContent, int quota, int remainingBudget) {
         return """
             你是一位资深测试工程师。请根据以下需求章节，生成【UI业务功能用例】。
-            
+
+            【事实边界与步骤对应规则】
+            1. 只能使用“章节内容”中明确出现或能够直接概括的页面、操作、字段、状态和埋点信息；不得引用提示词示例、常识或其他章节之外的账号、URL、事件 ID、参数名、参数值、错误码、时间阈值、数量和固定文案。
+            2. 原文没有给出具体值时，不要猜测具体值，也不要添加“待补充”“参数待确认”等伪字段；在允许的字段中写“文档未指定”或“由测试环境提供”这类中性说明即可。
+            3. 测试步骤必须使用连续编号（1.、2.、3.）；预期结果必须使用相同编号（①/1.、②/2.、③/3.均可），第N条预期只验证第N步动作产生的结果。一个步骤可以包含多个断言，但禁止把多个步骤合并到一个预期编号。
+            4. 埋点场景按“执行操作→打开Debug日志→筛选并查看日志”的顺序拆分步骤，并分别验证操作结果、日志页面可用性、日志记录及需求规定的参数完整性；事件 ID 与参数只按原文校验，原文未给出时不得编造。
+
             ⚠️ 红线规则（必须严格遵守）：
-            1. 这是需求文档的功能描述，不是API接口文档，不要生成接口测试用例
-            2. 1个独立测试点 = 1条用例，一条用例只能验证单一目标，禁止多业务流程合并
-            3. 禁止过粗：不能把多环节业务塞进1条用例（失败无法定位）
-            4. 禁止过细：不要同质化参数校验过度拆分，避免大量重复冗余用例
-            5. 编号由系统自动生成，不要输出用例编号
-            6. 测试点分类必须严格使用枚举值：正向/参数校验/边界/异常/UI校验/权限校验
-            7. 优先级必须使用：P0/P1/P2
-            8. 所有预期结果必须量化，包含明确判定标准（数字、具体值、状态），禁止模糊描述
-            9. **输出必须严格14个字段用|分隔**，末尾字段为空也必须保留分隔符（如`xxx|xxx|P0|测试环境|V1.0.0||||`）
+            1. 这是需求文档的功能描述，不是API接口文档，不要生成接口测试用例，更不要为字段说明/背景介绍生成用例
+            2. 用例粒度：1个独立测试点 = 1条用例。同一类测试场景只生成1条代表性用例，禁止重复冗余
+            3. 编号由系统自动生成，不要输出用例编号
+            4. 测试点分类必须严格使用枚举值：正向/参数校验/边界/异常/UI校验/权限校验
+            5. 优先级必须使用 P0/P1/P2
+            6. 预期结果必须可观察、可判定，不得只写“操作成功”“页面正常”“数据正确”
+            7. 输出必须严格14个字段用|分隔，顺序与下方格式一致，末尾空字段保留分隔符
+            8. 数量按本节配额生成，功能点不足时宁可少生成，不得通过编造事实凑数
 
             当前章节标题：%s
 
-            章节内容（请仔细分析以下内容，识别出所有可测试的功能点）：
+            章节内容（事实来源仅限以下文本）：
             %s
 
-            分析指南（请按以下步骤识别测试点）：
-            步骤1 - 提取核心业务功能：从文档中找出所有独立的功能点（如"用户登录"、"创建订单"、"数据导出"等）
-            步骤2 - 分析每个功能点的输入：找出所有输入字段、约束条件、格式要求
-            步骤3 - 分析每个功能点的操作：找出用户操作路径、页面流转、按钮点击等
-            步骤4 - 分析每个功能点的输出：找出预期结果、数据变化、页面跳转等
-            步骤5 - 对每个功能点，按以下场景清单生成对应类型的测试用例
-
-            必须覆盖的场景清单（至少覆盖以下类型）：
-            1. 正向：核心业务流程正常走通
-            2. 参数校验：必填项、格式校验、数据类型校验
-            3. 边界：字段长度边界、数量边界、日期边界
-            4. 异常：空值、非法值、重复提交、数据不存在
-            5. UI校验：页面刷新持久化、多端适配（PC/平板/手机）、文案固定性、布局正确性
-            6. 权限校验：越权访问、无权限操作、角色权限边界
-
-            字段填写规范：
-            - 测试大模块：顶层业务域（如"系统管理"、"业务功能"、"数据管理"）
-            - 子模块：具体功能模块（如"用户管理"、"订单管理"、"商品管理"）
-            - 测试点分类：必须从枚举值中选择（正向/参数校验/边界/异常/UI校验/权限校验）
-            - 用例标题：清晰描述单一验证目标，含场景关键词
-            - 前置条件：必须包含系统状态（如"系统已登录"）、页面路径，禁止只写"系统已部署"
-            - 预置测试数据：必须包含具体账号（如"管理员账号admin/123456"）、预置数据（如"已存在用户test001"、"订单ORD001状态为待支付"），禁止空白
-            - 操作步骤：必须包含完整页面路径（菜单入口/URL），每步以数字开头，步骤清晰可复现
-            - 量化预期结果：必须包含明确判定标准（如"页面展示≥10条数据"、"状态变为'已支付'"、"刷新后数据不消失"），禁止模糊文字
-
-            优先级评估标准：
-            - P0：核心业务流程、主功能验证、严重安全漏洞、导致系统崩溃的场景、认证授权失败
-            - P1：边界值、一般异常、普通数据校验、UI适配、权限越权
-            - P2：次要功能、非核心场景、兼容性细节、文案校验
-
-            输出格式（每个用例一行，字段用|分隔，不要输出用例编号！编号由系统自动生成）：
+            输出格式（每个用例一行，字段用|分隔，不要输出用例编号）：
             测试大模块|子模块|测试点分类|用例标题|前置条件|预置测试数据|操作步骤|量化预期结果|优先级|测试环境|版本|实际结果|缺陷单号|测试日期
 
-            输出示例（正确格式 — 注意末尾保持|||占位）：
-            系统管理|用户管理|正向|管理员登录成功|测试环境已启动，浏览器已打开|管理员账号admin/123456已注册|1.访问http://test.example.com/login 2.输入用户名admin 3.输入密码123456 4.点击"登录"按钮|成功跳转到系统首页，右上角显示"admin"，登录时间显示正确|P0|测试环境|V1.0.0|||
-            系统管理|用户管理|参数校验|用户名为空登录失败|测试环境已启动，登录页面已打开|无|1.用户名输入框留空 2.密码输入123456 3.点击"登录"按钮|提示"用户名不能为空"，登录按钮保持可点击状态|P0|测试环境|V1.0.0|||
-            系统管理|用户管理|边界|用户名达到最大长度登录成功|测试环境已启动，登录页面已打开|用户名为20位字母的账号已注册|1.用户名输入20位字母 2.密码输入正确密码 3.点击"登录"按钮|登录成功，首页正常展示|P1|测试环境|V1.0.0|||
-            系统管理|用户管理|异常|输入不存在的用户名登录失败|测试环境已启动，登录页面已打开|无预置数据|1.用户名输入nonexist 2.密码输入123456 3.点击"登录"按钮|提示"用户名或密码错误"，连续失败3次后账号锁定5分钟|P0|测试环境|V1.0.0|||
-            系统管理|用户管理|UI校验|登录页面刷新后数据不消失|测试环境已启动，登录页面已打开|无|1.在用户名输入框输入test 2.在密码输入框输入123 3.按F5刷新页面|用户名输入框保留"test"，密码输入框清空|P1|测试环境|V1.0.0|||
-            系统管理|用户管理|权限校验|普通用户访问管理员页面被拒绝|测试环境已启动，普通用户已登录|普通用户user001账号，管理员页面URL：/admin|1.在地址栏输入http://test.example.com/admin 2.按回车|跳转到403禁止访问页面，显示"您无权限访问此页面"|P0|测试环境|V1.0.0|||
-            业务功能|订单管理|正向|创建订单成功|测试环境已启动，商品详情页已打开|用户user001已登录，商品ID1001库存≥10|1.进入商品列表页→点击商品ID1001→点击"立即购买" 2.选择数量1 3.点击"提交订单" 4.确认订单信息|订单创建成功，页面显示订单号ORD-YYYYMMDD-XXXX，商品库存减少1，订单状态为"待支付"|P0|测试环境|V1.0.0|||
-            业务功能|订单管理|UI校验|订单列表页面多端适配正常|测试环境已启动，订单列表页已打开|存在≥15条订单数据|1.使用浏览器开发者工具切换到PC模式 2.切换到平板模式(768px) 3.切换到手机模式(375px)|三种模式下表格列完整展示，无横向滚动条，按钮可点击|P1|测试环境|V1.0.0|||
+            输出要求：前置条件、预置测试数据、测试环境、版本等字段如果原文没有提供具体内容，填写“文档未指定”或留空；不要使用任何示例中的具体账号、URL、订单号、事件ID或参数。
             """.formatted(sectionTitle, sectionContent);
+    }
+
+    /**
+     * 裁剪低优先级用例：总量超预算时优先保留 P0/P1，P2 从尾部裁剪（模块8：P2 可选折叠）
+     */
+    private static List<TestCase> trimLowPriority(List<TestCase> cases, int budget) {
+        if (cases == null || cases.size() <= budget) return cases;
+        List<TestCase> p0p1 = new ArrayList<>();
+        List<TestCase> p2 = new ArrayList<>();
+        for (TestCase tc : cases) {
+            if ("P2".equals(tc.getField("priority"))) {
+                p2.add(tc);
+            } else {
+                p0p1.add(tc);
+            }
+        }
+        List<TestCase> ordered = new ArrayList<>(p0p1);
+        ordered.addAll(p2);
+        return new ArrayList<>(ordered.subList(0, Math.min(budget, ordered.size())));
     }
 
     /**
@@ -1331,6 +1799,8 @@ public class AiService {
             else if (line.contains("	")) parts = line.split("\t", -1);
             int minCols = currentTemplate != null ? currentTemplate.getFields().size() : 14;
             if (parts != null && parts.length >= minCols) {
+                // 跳过 AI 回显的列头垃圾行（如 "标题|所属分组|创建人|..."）
+                if (isTemplateHeaderRow(parts, currentTemplate)) continue;
                 // 跳过 Markdown 表格行（首字段为空，如 "| 系统管理 | 用户管理 |"）
                 if (safeGet(parts, 0).isEmpty() && safeGet(parts, 1).isEmpty()) continue;
                 TestCase tc = new TestCase();
@@ -1341,6 +1811,8 @@ public class AiService {
                         String key = currentTemplate.getFields().get(i).getFieldName();
                         tc.setField(key, safeGet(parts, i));
                     }
+                    // 列内容修复：状态默认"待评审"、等级取优先级、类型/自动化兜底
+                    repairCustomTemplateRow(tc, currentTemplate);
                 } else {
                     // 默认14列UI映射
                     tc.setField("parentModule", safeGet(parts, 0));

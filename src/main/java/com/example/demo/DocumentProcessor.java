@@ -307,8 +307,13 @@ public class DocumentProcessor {
         log.info("  服务器模式: java -jar demo.jar --server");
         log.info("");
         log.info("环境变量:");
-        log.info("  DASHSCOPE_API_KEY 或 AI_API_KEY - AI API密钥");
-        log.info("  AI_MODEL_PROVIDER - 模型提供商 (qwen/deepseek)，默认 qwen");
+        log.info("  DEEPSEEK_API_KEY  - DeepSeek API密钥");
+        log.info("  DASHSCOPE_API_KEY - 通义千问(DashScope) API密钥");
+        log.info("  DOUBAO_API_KEY    - 豆包(火山方舟) API密钥");
+        log.info("  GLM_API_KEY       - 智谱GLM API密钥");
+        log.info("  OPENAI_API_KEY    - OpenAI API密钥");
+        log.info("  AI_API_KEY        - 通用兜底 API密钥");
+        log.info("  AI_MODEL_PROVIDER - 默认模型提供商 (qwen/deepseek)，默认 qwen");
     }
 
     /**

@@ -43,8 +43,7 @@ public class TestCase {
     }
     
     public Integer getIntField(String fieldName) {
-        String value = getField(fieldName);
-        return value != null && !value.isEmpty() ? Integer.parseInt(value) : null;
+        return extractInteger(getField(fieldName));
     }
     
     public void setIntField(String fieldName, Integer value) {
@@ -101,16 +100,72 @@ public class TestCase {
     public void setParams(String value) { setField("params", value); }
     
     public Integer getExpectedStatusCode() {
-        String value = getField("expectedStatusCode");
-        return value != null && !value.isEmpty() ? Integer.parseInt(value) : null;
+        return extractStatusCode(getField("expectedStatusCode"));
     }
     public void setExpectedStatusCode(Integer value) { setField("expectedStatusCode", value != null ? value.toString() : ""); }
-    
+
     public Integer getExpectedBusinessCode() {
-        String value = getField("expectedBusinessCode");
-        return value != null && !value.isEmpty() ? Integer.parseInt(value) : null;
+        return extractInteger(getField("expectedBusinessCode"));
     }
     public void setExpectedBusinessCode(Integer value) { setField("expectedBusinessCode", value != null ? value.toString() : ""); }
+
+    /**
+     * 从字段值中稳健地提取整数。
+     * 兼容纯数字（"200"、"0"）与自然语言描述（"返回200+{...}"、"code:0 成功"、"HTTP 200 OK" 等）。
+     * 提取不到时返回 null，绝不抛 NumberFormatException。
+     */
+    public static Integer extractInteger(String value) {
+        if (value == null || value.isEmpty()) {
+            return null;
+        }
+        String trimmed = value.trim();
+        // 纯数字：直接解析
+        if (trimmed.matches("\\d+")) {
+            try {
+                return Integer.parseInt(trimmed);
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        // 自然语言描述：提取第一个整数，如 "返回200+{...}" → 200
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+)").matcher(trimmed);
+        if (m.find()) {
+            try {
+                return Integer.parseInt(m.group(1));
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 从字段值中稳健地提取 HTTP 状态码。
+     * 优先匹配 3 位状态码（100~599），否则取第一个整数。
+     */
+    public static Integer extractStatusCode(String value) {
+        if (value == null || value.isEmpty()) {
+            return null;
+        }
+        String trimmed = value.trim();
+        if (trimmed.matches("\\d+")) {
+            try {
+                return Integer.parseInt(trimmed);
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        // 优先匹配 3 位 HTTP 状态码，如 "返回200+{...}" → 200
+        java.util.regex.Matcher m3 = java.util.regex.Pattern.compile("\\b[1-5]\\d{2}\\b").matcher(trimmed);
+        if (m3.find()) {
+            try {
+                return Integer.parseInt(m3.group());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return extractInteger(trimmed);
+    }
     
     public String getExpectedResponseJson() { return getField("expectedResponseJson"); }
     public void setExpectedResponseJson(String value) { setField("expectedResponseJson", value); }

@@ -181,7 +181,7 @@ public class TestCaseTemplate {
         template.addField("precondition", "前置条件", FieldType.TEXT, false);
         template.addField("steps", "测试步骤", FieldType.TEXT, false);
         template.addField("expectedResult", "预期结果", FieldType.TEXT, false);
-        template.addField("status", "状态", FieldType.ENUM, false, "未执行", "执行中", "通过", "失败", "阻塞");
+        template.addField("status", "状态", FieldType.ENUM, false, "待评审", "未执行", "执行中", "通过", "失败", "阻塞");
         template.addField("priority", "等级", FieldType.ENUM, false, "P0", "P1", "P2", "P3");
         template.addField("caseType", "类型", FieldType.ENUM, false, "功能测试", "接口测试", "性能测试", "安全测试", "兼容性测试");
         template.addField("isAutomated", "自动化", FieldType.ENUM, false, "是", "否", "部分");

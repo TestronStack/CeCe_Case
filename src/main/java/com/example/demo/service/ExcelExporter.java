@@ -22,6 +22,21 @@ import java.util.List;
 @Slf4j
 public class ExcelExporter {
 
+    /** Excel 单元格内容最大长度（POI 限制），超长需截断否则抛异常 */
+    private static final int MAX_CELL_LENGTH = 32767;
+    private static final String TRUNCATE_SUFFIX = "…(内容过长已截断)";
+
+    /**
+     * 截断超长单元格内容，避免超过 POI 的 32767 字符限制导致导出失败
+     */
+    private static String truncateCell(String value) {
+        if (value == null) return "";
+        if (value.length() <= MAX_CELL_LENGTH) return value;
+        int keep = MAX_CELL_LENGTH - TRUNCATE_SUFFIX.length();
+        if (keep < 0) keep = 0;
+        return value.substring(0, keep) + TRUNCATE_SUFFIX;
+    }
+
     /**
      * 导出测试用例到Excel文件（使用自定义模板）
      */
@@ -56,7 +71,7 @@ public class ExcelExporter {
                 for (int i = 0; i < template.getFields().size(); i++) {
                     TemplateField field = template.getFields().get(i);
                     String value = tc.getField(field.getFieldName());
-                    row.createCell(i).setCellValue(value != null ? value : "");
+                    row.createCell(i).setCellValue(truncateCell(value));
                 }
             }
 
