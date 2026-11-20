@@ -1,6 +1,19 @@
 spring:
   application:
     name: ai-testcase-generator
+  # 本地数据库账号密码放在 ./config/application-local.yml（已加入 .gitignore，不会提交）
+  config:
+    import: optional:file:./config/application-local.yml
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DB:cece_case}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&createDatabaseIfNotExist=true
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:db/schema.sql
+      continue-on-error: true
   thymeleaf:
     check-template-location: false
   servlet:
@@ -10,6 +23,24 @@ spring:
   mvc:
     async:
       request-timeout: 600000
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    banner: false
+    db-config:
+      id-type: auto
+
+jwt:
+  # 生产环境请通过环境变量 JWT_SECRET 覆盖
+  secret: ${JWT_SECRET:cece-graduation-project-secret-key-please-change-in-production-2026}
+  expire-hours: 168
+
+cece:
+  storage:
+    # 上传文档、生成文件的根目录
+    root: ${CECE_STORAGE_ROOT:./data}
 
 server:
   port: 8819

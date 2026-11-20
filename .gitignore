@@ -37,10 +37,21 @@ build/
 
 ### 项目生成物 ###
 output/
+data/
 mvn_repo/
 *.log
 *.tmp
 
+### 前端 ###
+frontend/node_modules/
+frontend/dist/
+
 ### 本地环境配置 ###
 application-local.yml
 .env
+
+### 个人文档（不随项目发布） ###
+秋招简历-*.md
+面试高频题与参考答案.md
+故障复盘-*.md
+深圳数据交易所*.xlsx

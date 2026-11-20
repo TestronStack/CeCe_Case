@@ -479,7 +479,8 @@ public class TestCaseGeneratorController {
         String dir = TMP + File.separator + "cece_" + System.currentTimeMillis();
         Files.createDirectories(Paths.get(dir));
         String fp = dir + File.separator + file.getOriginalFilename();
-        file.transferTo(new File(fp));
+        // 用流拷贝替代 transferTo：Undertow 的临时文件在 Part 读取后可能已被清理
+        Files.copy(file.getInputStream(), Paths.get(fp), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         return fp;
     }
     /** 取接口块首行（方法 + 路径），用于进度日志展示 */

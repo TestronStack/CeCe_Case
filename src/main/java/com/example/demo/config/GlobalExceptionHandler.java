@@ -1,5 +1,7 @@
 package com.example.demo.config;
 
+import com.example.demo.common.ApiException;
+import com.example.demo.common.ApiResponse;
 import com.example.demo.dto.ErrorResponse;
 import com.example.demo.exception.AIServiceException;
 import com.example.demo.exception.DocumentParseException;
@@ -52,5 +54,21 @@ public class GlobalExceptionHandler {
         return ResponseEntity.badRequest()
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(ErrorResponse.badRequest(e.getMessage()));
+    }
+
+    @ExceptionHandler(ApiException.class)
+    public ResponseEntity<ApiResponse<Void>> handleApiException(ApiException e) {
+        return ResponseEntity.status(e.getCode())
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(ApiResponse.error(e.getCode(), e.getMessage()));
+    }
+
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ApiResponse<Void>> handleException(Exception e) {
+        log.error("未处理异常", e);
+        String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+        return ResponseEntity.status(500)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(ApiResponse.error(500, "服务异常：" + msg));
     }
 }

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  项目内 Maven 配置：本机 settings.xml 使用 http 协议的阿里云镜像，
+  部分网络环境会拦截 http 下载导致依赖缺失，这里统一改为 https。
+  使用方式：mvn -s maven-settings.xml clean package
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 http://maven.apache.org/xsd/settings-1.0.0.xsd">
+    <mirrors>
+        <mirror>
+            <id>aliyun-https</id>
+            <mirrorOf>central</mirrorOf>
+            <name>Aliyun Public HTTPS</name>
+            <url>https://maven.aliyun.com/repository/public</url>
+        </mirror>
+    </mirrors>
+</settings>

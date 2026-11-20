@@ -2,91 +2,99 @@
 
 # 🧪 测测 CeCe
 
-**AI Testing Buddy** — 你的 AI 测试用例生成助手
+**AI Testing Buddy** — 面向测试团队的 AI 用例生成与管理平台
 
 [![JDK](https://img.shields.io/badge/JDK-17%2B-blue)](https://adoptium.net/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.3.0-brightgreen)](https://spring.io/projects/spring-boot)
+[![Vue](https://img.shields.io/badge/Vue-3.4-42b883)](https://vuejs.org/)
+[![MySQL](https://img.shields.io/badge/MySQL-8.0-4479A1)](https://www.mysql.com/)
 [![LangChain4j](https://img.shields.io/badge/LangChain4j-0.35.0-orange)](https://github.com/langchain4j/)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](#-license)
 
-> 上传接口文档或需求文档，AI 自动生成标准化测试用例，支持多格式导出与自动化测试脚本生成。
+> 注册登录后上传需求文档 / 接口文档，AI 异步生成标准化测试用例，按账号归档、在线评审、多格式导出，并可直接生成可运行的自动化测试脚本。
 
 </div>
 
 ---
 
-## 📸 快速预览
+## 📸 功能总览
 
 ```
-👋 欢迎使用 测测 CeCe
-┌────────────────────────────────────────────────────┐
-│  📋 需求文档  →  UI 功能测试用例                     │
-│  🧪 接口文档  →  接口用例 + 自动化脚本（Java/Python） │
-│  🔧 接口文档  →  接口测试用例（仅导出用例）            │
-│  💬 自然语言  →  快速生成测试用例                     │
-│  🤖 多模型切换：DeepSeek / Qwen / 豆包 / GPT / GLM    │
-└────────────────────────────────────────────────────┘
+登录 / 注册（JWT）
+└── 工作台        用例数量、生成趋势、优先级分布、最近任务
+├── AI 生成
+│   ├── 需求文档生成    .docx/.pdf/.md/.txt → 15 列 UI 功能用例
+│   ├── 接口用例生成    接口文档 / Swagger → 24 列接口用例
+│   ├── 自动化脚本      接口用例 + TestNG(RestAssured) / pytest 工程 ZIP
+│   └── 自然语言生成    一段描述 → 测试用例
+├── 资产
+│   ├── 用例库        批次列表 → 用例详情，在线编辑 / 通过 / 驳回 / 删除 / 导出
+│   ├── 文档库        上传的文档按账号归档，可下载、删除、复用于生成
+│   ├── 任务记录      每次生成的实时进度与结果，失败可查看原因
+│   └── 项目管理      按项目空间分组管理文档、任务与用例
+└── 配置
+    ├── 模板管理      内置 3 套模板 + 自定义列模板
+    └── 设置          个人资料、密码、AI 模型与 API Key
 ```
 
 ---
 
-## ✨ 功能特性
+## ✨ 核心特性
 
-### 📋 需求文档 → UI 测试用例（Tab1）
+### 🔐 多用户与账号隔离
+- 注册 / 登录（JWT，默认 7 天有效期），密码 BCrypt 加密存储
+- 文档、任务、用例批次、模板、AI 配置全部按 `userId` 隔离
+- 换台电脑或重新登录，历史任务与生成结果仍在
+
+### ⚡ 真实异步任务
+- 生成任务写入 `generation_task` 表，由线程池异步执行，接口立即返回任务 ID
+- 前端通过 SSE（`/api/tasks/{id}/events`）实时接收进度与阶段文案
+- 任务失败落库并保留错误信息，任务记录页可回溯
+
+### 📋 需求文档 → UI 用例
 | 功能 | 说明 |
 |------|------|
-| 支持格式 | `.docx` `.pdf` `.md` `.txt` |
-| 读取方式 | 全部读取 / 指定页数 / 指定章节（可多选）/ 指定关键词 |
-| 章节识别 | 自动识别 `第X章` / `1.1` / `一、` 等章节标题，前端下拉选择 |
-| 导出规格 | **15 列** UI 用例模板（用例编号、测试大模块、子模块、测试点分类、用例标题、前置条件、预置测试数据、操作步骤、量化预期结果、优先级、测试环境、版本、实际结果、缺陷单号、测试日期） |
-| 测试点分类 | 枚举值：正向 / 参数校验 / 边界 / 异常 / UI校验 / 权限校验 |
-| 质量校验 | 确定性校验步骤与预期编号是否一一对应、关键事实是否来源于需求原文，拒绝空标题/空步骤/模糊预期 |
-| 自定义列 | 支持输入自定义列名（`|` 分隔），自动映射标准字段并补齐默认值 |
-| 输出格式 | Excel / CSV / JSON / Markdown，可指定导出路径 |
+| 读取方式 | 全部 / 指定页数 / 指定章节（多选）/ 指定关键词 |
+| 章节识别 | 自动识别 `第X章`、`1.1`、`一、`、Markdown 标题 |
+| 导出规格 | **15 列**（编号、测试大模块、子模块、测试点分类、标题、前置条件、预置数据、步骤、量化预期结果、优先级、环境、版本、实际结果、缺陷单号、测试日期） |
+| 质量校验 | 步骤与预期必须编号一一对应、关键事实需来源于原文，过滤空标题与模糊预期 |
+| 自定义列 | 输入 `|` 分隔列名，自动映射标准字段 |
 
-### 🧪 接口文档 → 自动化脚本（Tab2）
-| 功能 | 说明 |
-|------|------|
-| 支持格式 | `.docx` `.pdf` `.json` `.yaml` `.yml` `.md`，亦支持 Swagger URL |
-| 读取方式 | 全部读取 / 指定页数 |
-| 用例生成 | 先提取接口定义并生成 **24 列**接口测试用例，再基于用例生成脚本 |
-| 脚本语言 | **Java**（TestNG + RestAssured + Allure）/ **Python**（pytest + requests + allure） |
-| 输出 | 完整可运行工程，打包为 `.zip` 下载，内含 `接口测试用例.xlsx` |
-| 数量控制 | 单接口最多 8 条用例，整份文档按预算裁剪，优先保留 P0/P1 |
+### 🧪 接口文档 → 用例 / 脚本
+- 支持 `.docx` `.pdf` `.json` `.yaml` `.yml` `.md` 与 Swagger URL
+- 接口用例 **24 列**（路径、方法、请求头、参数、预期状态码/业务码/响应 JSON、断言规则、数据库校验等）
+- 脚本语言：Java（TestNG + RestAssured + Allure）/ Python（pytest + requests + allure），输出完整工程 ZIP
 
-### 🔧 接口文档 → 接口测试用例（Tab4）
-- 只生成并导出接口用例，不生成脚本
-- **24 列**标准模板：用例编号、测试模块、测试点、用例标题、接口路径、请求方法、前置条件、请求头、请求参数、预期状态码、预期业务码、预期响应 JSON、断言规则、数据库校验、优先级、测试环境、版本、测试人、缺陷单号、测试日期等
-- 支持 Excel / CSV / JSON / Markdown 导出
+### 🗂 用例资产化
+- 按批次保存每次生成结果，列结构（`columnsJson`）一并持久化
+- 在线编辑任意字段、评审（通过 / 驳回 + 驳回原因）、删除
+- 导出 Excel / CSV / JSON / Markdown，导出内容为"当前修改后的版本"
 
-### 💬 自然语言 → 测试用例（Tab3）
-- 支持「接口描述」或「需求描述」两种输入类型
-- 可指定生成数量（1～50 条）
-- 支持自定义列模板与多格式导出
-- 内容少于 20 字时给出补充提示，避免无效生成
-
-### 🤖 多模型切换
-| 模型 | 模型标识 | API Key 环境变量 |
-|------|---------|-----------------|
+### 🤖 多模型可切换
+| 模型 | 标识 | 环境变量 |
+|------|------|---------|
 | DeepSeek Chat（默认） | `deepseek-chat` | `DEEPSEEK_API_KEY` |
-| 通义千问 Qwen-VL | `qwen-vl-max` | `DASHSCOPE_API_KEY` |
-| 豆包 Vision | `doubao-seed-1-6-vision-250815` | `DOUBAO_API_KEY`（或 `ARK_API_KEY`） |
+| 通义千问 Qwen | `qwen-vl-max` | `DASHSCOPE_API_KEY` |
+| 豆包 Vision | `doubao-seed-1-6-vision-250815` | `DOUBAO_API_KEY` / `ARK_API_KEY` |
 | OpenAI GPT-4o | `gpt-4o` | `OPENAI_API_KEY` |
 | 智谱 GLM-4V | `glm-4v` | `GLM_API_KEY` |
-| 通用兜底 | — | `AI_API_KEY` |
 
-页面顶部下拉框可直接切换模型，切换时自动读取对应提供商的 Key。
+也可在「设置 → AI 模型」中为当前账号保存加密后的 API Key（AES 存储，展示时脱敏）。
 
-### 🧹 生成质量保障
-- **Prompt 质量红线**：禁止 `xxx`/`test` 等占位参数、预期结果必须量化、断言需包含状态码 + 业务码 + 关键字段
-- **确定性校验**：`TestCaseQualityValidator` 校验 UI 用例的步骤/预期编号对应关系及需求来源事实
-- **去重与裁剪**：按模板全字段去重；`ai.case-budget`（默认 120 条）控制总量，超量优先裁剪 P2 用例
-- **字段规范化**：模板转置时强制补齐类型、自动化等默认值
+---
 
-### 📦 其他能力
-- 批量扫描文件夹内文档，统一生成 HTML 汇总报告
-- 自定义模板保存 / 列表复用（`/api/template/save`、`/api/template/list`）
-- 静态资源禁用浏览器缓存，前端更新后刷新即生效
+## 🏗️ 技术栈
+
+| 层 | 技术 |
+|------|------|
+| 后端 | Spring Boot 3.3.0（Undertow）、MyBatis-Plus 3.5.7 |
+| 数据库 | MySQL 8（启动自动建表，`db/schema.sql`） |
+| 鉴权 | JJWT 0.12.5（HS512）+ BCrypt + 自定义拦截器 |
+| AI | LangChain4j 0.35.0（OpenAI 兼容协议） |
+| 文档解析 | Apache POI（DOCX）/ PDFBox 3（PDF）/ Jackson + SnakeYAML（Swagger） |
+| 导出 | Apache POI（Excel）/ CSV / JSON / Markdown |
+| 前端 | Vue 3 + Vite 5 + Element Plus + Pinia + Vue Router + ECharts + Axios |
+| 实时进度 | SseEmitter + `ScheduledExecutorService` 轮询任务表推送 |
 
 ---
 
@@ -95,90 +103,94 @@
 ### 前置条件
 - JDK 17+
 - Maven 3.6+
-- 任一模型 API Key（推荐 DeepSeek：[申请地址](https://platform.deepseek.com/)）
+- MySQL 8（本机 `localhost:3306`）
+- Node.js 18+（仅修改前端时需要）
+- 任一模型 API Key
 
-### 1. 配置 API Key
+### 1. 配置数据库账号
+
+项目会自动创建 `cece_case` 库与全部表，只需提供账号密码。在项目根目录新建 `config/application-local.yml`：
+
+```yaml
+spring:
+  datasource:
+    username: root
+    password: 你的MySQL密码
+```
+
+> 也可用环境变量：`MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_DB` / `MYSQL_USERNAME` / `MYSQL_PASSWORD`。
+> 该文件已加入 `.gitignore`，不会提交到仓库。
+
+### 2. 配置模型 API Key
 
 ```bash
 # Windows PowerShell
-$env:DEEPSEEK_API_KEY="your-api-key"
-
-# 或直接修改 application.yml
+$env:DEEPSEEK_API_KEY="sk-xxxx"
 ```
 
-```yaml
-ai:
-  api-key: ${DEEPSEEK_API_KEY:}
-  model:
-    provider: deepseek
-```
+或直接在 `application.yml` 的 `ai.api-key` 填写。
 
-Key 只从环境变量读取，不会写入代码仓库。
-
-### 2. 启动
+### 3. 启动后端
 
 ```bash
-# 方式一：打包后双击 run.bat
-mvn clean package -DskipTests
-run.bat
-
-# 方式二：直接运行
 mvn spring-boot:run
 ```
 
-### 3. 访问
+启动后访问 **http://localhost:8819**，演示账号：**admin / 123456**。
 
-浏览器打开 **[http://localhost:8819](http://localhost:8819)**
+### 4. 修改前端（可选）
+
+前端源码在 `frontend/`，构建产物会输出到 `src/main/resources/static`（后端直接托管）：
+
+```bash
+cd frontend
+npm install
+npm run dev      # 开发模式，代理到 8819
+npm run build    # 生产构建，产物写入后端静态目录
+```
+
+> 本机若 Maven 镜像下载受限，可使用项目内配置：`mvn -s maven-settings.xml spring-boot:run`。
 
 ---
-
-## 🏗️ 技术栈
-
-| 层 | 技术 |
-|------|------|
-| 后端框架 | Spring Boot 3.3.0（Undertow，无 Tomcat） |
-| AI 集成 | LangChain4j 0.35.0 + OpenAI 兼容接口 |
-| AI 模型 | DeepSeek / Qwen / 豆包 / GPT / GLM（可切换） |
-| 文档解析 | Apache POI (DOCX) / PDFBox 3.0.2 (PDF) / Jackson + SnakeYAML + Swagger Parser |
-| 报表导出 | Apache POI (Excel) / CSV / JSON / Markdown |
-| 脚本生成 | TestNG + RestAssured + Allure（Java）/ pytest + requests + allure（Python） |
-| 前端 | 原生 HTML + CSS + JavaScript（暗色技术风，单页四 Tab） |
-| 测试 | JUnit 5 + AssertJ + Spring Boot Test |
 
 ## 📂 项目结构
 
 ```
 src/main/java/com/example/demo/
-├── controller/
-│   └── TestCaseGeneratorController.java  # Web 接口（4 个功能入口 + 模型/模板）
-├── config/
-│   ├── WebConfig.java                    # 静态资源禁用缓存
-│   └── GlobalExceptionHandler.java       # 全局异常处理
-├── service/
-│   ├── AiService.java                    # AI 调用、Prompt、模型切换、用例预算
-│   ├── WordParser.java                   # DOCX/MD/TXT 解析 + 章节/分页算法
-│   ├── PdfParser.java                    # PDF 解析（精确页码）
-│   ├── ExcelExporter.java                # 多格式导出（24列/15列/自定义）
-│   ├── ScriptGenerator.java              # Java / Python 自动化脚本生成
-│   ├── TestCaseQualityValidator.java     # UI 用例确定性质量校验
-│   ├── TemplateManager.java              # 自定义模板保存与读取
-│   ├── BatchScanService.java             # 批量扫描
-│   ├── HtmlReportGenerator.java          # HTML 汇总报告
-│   ├── FeedbackSystem.java               # 生成反馈
-│   └── TestCaseExecutor.java             # 用例执行辅助
-├── dto/ exception/ util/                 # 响应体、异常、下载工具
-├── TestCaseTemplate.java                 # 15 列 UI / 24 列 API 模板定义
-├── TestCase.java                         # 测试用例实体
-├── DocumentProcessor.java                # 主逻辑入口 / 模型初始化
-├── SwaggerParser.java                    # Swagger / OpenAPI 解析
-└── DemoApplication.java                  # 启动类（含启动信息面板）
+├── auth/                JwtUtil、AuthInterceptor、UserContext
+├── common/              ApiResponse、ApiException、CryptoUtil
+├── config/              WebConfig、AsyncConfig、DataInitializer、全局异常处理
+├── controller/          Auth / Project / Document / Generation / Task / Case / Dashboard / Template / Setting
+├── entity/ mapper/      8 张表的实体与 MyBatis-Plus Mapper
+├── service/             User、Project、Document、Storage、Generation、Task、Case、Dashboard、
+│                        Template、AiConfig，以及 AiService、WordParser、PdfParser、
+│                        ExcelExporter、ScriptGenerator、CaseAssembler 等
+├── TestCase / TestCaseTemplate
+└── DemoApplication.java
 
-src/test/java/com/example/demo/
-├── TestCaseTemplateTest.java            # 模板字段与转置测试
-└── service/
-    ├── ExcelExporterTest.java           # Excel 导出测试
-    └── TestCaseQualityValidatorTest.java # 质量校验测试
+src/main/resources/
+├── application.yml      主配置
+├── db/schema.sql        建表脚本（启动时自动执行）
+├── prompts/             Prompt 模板
+└── static/              Vue 构建产物
+
+frontend/                Vue3 + Vite 源码
 ```
+
+---
+
+## 🗄️ 数据表
+
+| 表 | 说明 |
+|------|------|
+| `sys_user` | 用户（用户名、BCrypt 密码、昵称、邮箱、头像） |
+| `project` | 项目空间 |
+| `document` | 上传文档（路径、大小、SHA-256） |
+| `generation_task` | 生成任务（类型、状态、进度、阶段、参数、耗时） |
+| `test_case_batch` | 用例批次（列结构、用例数、导出文件路径） |
+| `test_case_item` | 单条用例（动态字段 JSON、评审状态与意见） |
+| `user_template` | 用户自定义模板 |
+| `user_ai_config` | 用户 AI 配置（加密 API Key） |
 
 ---
 
@@ -186,74 +198,45 @@ src/test/java/com/example/demo/
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/` | 重定向到前端页面 |
-| `POST` | `/api/generate-ui` | 需求文档 → UI 测试用例 |
-| `POST` | `/api/chapters` | 读取需求文档章节列表 |
-| `POST` | `/api/generate-script` | 接口文档 → 用例 + 自动化脚本 ZIP |
-| `POST` | `/api/generate-api` | 接口文档 → 接口测试用例 |
-| `POST` | `/api/generate-text` | 自然语言 → 测试用例 |
-| `POST` | `/api/generate-from-url` | Swagger URL → 测试用例 |
-| `GET` | `/api/models` | 获取可用模型列表与当前模型 |
-| `POST` | `/api/switch-model` | 切换模型（可临时传入 apiKey） |
-| `POST` | `/api/template/save` | 保存自定义模板 |
-| `GET` | `/api/template/list` | 获取模板列表 |
+| `POST` | `/api/auth/register` / `/api/auth/login` | 注册 / 登录，返回 JWT |
+| `GET` | `/api/auth/me` | 当前用户信息 |
+| `GET/POST/PUT/DELETE` | `/api/projects` | 项目空间增删改查 |
+| `POST` | `/api/documents` | 上传文档 |
+| `GET` | `/api/documents/{id}/download` | 下载文档 |
+| `POST` | `/api/generation/requirement` | 需求文档 → UI 用例（异步） |
+| `POST` | `/api/generation/api` | 接口文档 → 接口用例（异步） |
+| `POST` | `/api/generation/script` | 接口文档 → 用例 + 脚本 ZIP（异步） |
+| `POST` | `/api/generation/text` | 自然语言 → 用例（异步） |
+| `POST` | `/api/generation/chapters` | 读取文档章节列表 |
+| `GET` | `/api/tasks` / `/api/tasks/{id}` | 任务列表 / 详情 |
+| `GET` | `/api/tasks/{id}/events` | SSE 实时进度 |
+| `GET` | `/api/batches` / `/api/batches/{id}` | 用例批次列表 / 详情 |
+| `PUT` | `/api/cases/{id}` | 编辑用例 / 评审 |
+| `GET` | `/api/batches/{id}/export?format=xlsx` | 导出当前用例 |
+| `GET` | `/api/dashboard/overview` | 看板统计 |
+| `GET/POST/DELETE` | `/api/templates` | 模板管理 |
+| `GET/PUT` | `/api/settings/ai` | AI 模型与 Key 设置 |
 
----
-
-## ⚙️ 配置说明
-
-### application.yml 关键配置
-
-```yaml
-server:
-  port: 8819                       # 服务端口
-
-spring:
-  servlet:
-    multipart:
-      max-file-size: 100MB         # 上传文件大小限制
-      max-request-size: 100MB
-  mvc:
-    async:
-      request-timeout: 600000      # 长任务超时（毫秒）
-
-ai:
-  api-key: ${DEEPSEEK_API_KEY:}    # API Key（仅从环境变量读取）
-  model:
-    provider: deepseek             # deepseek / qwen / doubao / glm / openai
-  case-budget: 120                 # 整份文档用例总量预算
-  prompts:
-    # 可在此覆盖接口提取、用例生成默认 Prompt
-```
-
----
-
-## 🧪 运行测试
-
-```bash
-mvn test
-```
-
-覆盖模板字段定义与转置、Excel 导出、UI 用例质量校验（步骤/预期编号一致性等）。
+除登录、注册、健康检查外，所有 `/api/**` 均需 `Authorization: Bearer <token>`（SSE 与下载支持 `?token=`）。
 
 ---
 
 ## 🐛 常见问题
 
+**Q：启动报数据库连接失败？**  
+A：确认 MySQL 已启动、`config/application-local.yml` 中账号密码正确；库和表会自动创建。
+
 **Q：生成用例为空？**  
-A：检查对应模型的 API Key 是否已配置，或文档中是否包含接口定义关键词（`/api/`、`GET`、`POST` 等）。自然语言输入需不少于 20 字。
+A：检查对应模型 API Key 是否配置；文档是否包含可测试的功能/接口描述。自然语言输入不少于 20 字。
+
+**Q：上传文件报 500？**  
+A：确认磁盘可写（`cece.storage.root`，默认 `./data`）；单文件限制 100MB。
 
 **Q：页码不准确？**  
-A：DOCX 没有物理页码，系统采用字符密度估算，误差约 ±3 页。需要精确页码时请上传 PDF。
+A：DOCX 无物理页码，按字符密度估算（误差约 ±3 页）；需要精确页码请上传 PDF。
 
-**Q：切换模型后报错？**  
-A：每个模型使用独立环境变量（见上表），切换前请先配置对应 Key，或通过 `/api/switch-model` 临时传入 `apiKey`。
-
-**Q：AI 生成的用例质量不高？**  
-A：系统内置 Prompt 质量红线与确定性校验（过滤占位参数、模糊预期、步骤/预期不匹配），也可在 `application.yml` 的 `ai.prompts` 中调整 Prompt。
-
-**Q：支持哪些导出格式？**  
-A：Excel（`.xlsx`）、CSV、JSON、Markdown；自动化脚本以 `.zip` 工程包输出。
+**Q：Maven 依赖下载失败？**  
+A：本机若配置了 http 镜像会被拦截，改用 `mvn -s maven-settings.xml ...`（项目内 HTTPS 阿里云镜像）。
 
 ---
 
